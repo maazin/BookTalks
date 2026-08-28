@@ -11,11 +11,11 @@ def _row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
 
 # --- documents -------------------------------------------------------------
 
-def create_document(filename: str) -> int:
+def create_document(filename: str, voice: str) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO documents (filename, status) VALUES (?, 'pending')",
-            (filename,),
+            "INSERT INTO documents (filename, voice, status) VALUES (?, ?, 'pending')",
+            (filename, voice),
         )
         return int(cur.lastrowid)
 

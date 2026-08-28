@@ -127,6 +127,6 @@ class EdgeTTSEngine:
                 part.unlink(missing_ok=True)
 
 
-def get_engine() -> Engine:
+def get_engine(voice: str = None) -> Engine:
     """The single place that decides which TTS backend the app uses."""
-    return EdgeTTSEngine()
+    return EdgeTTSEngine(voice=voice)

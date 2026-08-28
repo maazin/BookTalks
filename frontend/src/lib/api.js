@@ -72,12 +72,14 @@ export const api = {
     }),
   deleteDocument: (id) => request(`/documents/${id}`, { method: "DELETE" }),
   audioUrl: (id) => `${BASE}/documents/${id}/audio`,
-  upload(file, onProgress) {
+  listVoices: () => request("/voices"),
+  upload(file, voice, onProgress) {
     // XHR rather than fetch: upload progress matters for a 40 MB textbook.
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const form = new FormData();
       form.append("file", file);
+      if (voice) form.append("voice", voice);
       xhr.open("POST", `${BASE}/documents`);
       xhr.withCredentials = true;
       xhr.upload.onprogress = (event) => {

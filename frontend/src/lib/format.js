@@ -35,3 +35,10 @@ export function formatDate(value) {
 export function stripExtension(filename) {
   return (filename || "").replace(/\.pdf$/i, "");
 }
+
+/** "en-US-AriaNeural" -> "Aria". Mirrors the backend's voices._display_name
+ *  so the player can show a voice's name without a second /api/voices fetch. */
+export function voiceDisplayName(shortName) {
+  const match = /^[a-z]{2,3}-[A-Z]{2}-(.+?)(?:Multilingual)?Neural\d*$/.exec(shortName || "");
+  return match ? match[1] : shortName || "";
+}

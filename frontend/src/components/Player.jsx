@@ -3,12 +3,26 @@ import { Icon } from "./Icons.jsx";
 import { ConfirmDialog } from "./ConfirmDialog.jsx";
 import { StatusBadge, isWorking, statusLabel } from "./StatusBadge.jsx";
 import { api } from "../lib/api.js";
-import { formatDuration, formatTime, stripExtension } from "../lib/format.js";
+import { formatDuration, formatTime, stripExtension, voiceDisplayName } from "../lib/format.js";
 
 const SPEEDS = [1, 1.25, 1.5, 2];
 const SKIP_SECONDS = 15;
 const SAVE_EVERY_MS = 10000;
 const STATUS_POLL_MS = 2500;
+const VOLUME_KEY = "booktalks_volume";
+
+// Volume is a device preference, not a document one — unlike position and
+// speed, it isn't saved on the server. It applies to every book you open on
+// this browser, the same way your phone's volume applies to every app.
+function loadVolume() {
+  const raw = localStorage.getItem(VOLUME_KEY);
+  // Must check for "nothing stored" before converting to a number — Number(null)
+  // is 0, not NaN, so a missing key would otherwise silently default to muted
+  // instead of falling through to the intended default of 1.
+  if (raw === null) return 1;
+  const stored = Number(raw);
+  return Number.isFinite(stored) && stored >= 0 && stored <= 1 ? stored : 1;
+}
 
 export function Player({ documentId, onToast, onExit }) {
   const [doc, setDoc] = useState(null);
@@ -22,6 +36,8 @@ export function Player({ documentId, onToast, onExit }) {
   const [duration, setDuration] = useState(0);
   const [rate, setRate] = useState(1);
   const [buffering, setBuffering] = useState(false);
+  const [volume, setVolume] = useState(loadVolume);
+  const [muted, setMuted] = useState(false);
 
   // Resuming needs two things that arrive in either order: the saved position
   // from the API, and an <audio> element that knows its duration. Whichever
@@ -139,6 +155,20 @@ export function Player({ documentId, onToast, onExit }) {
       save(true);
     };
   }, [save]);
+
+  /* --- volume ------------------------------------------------------------- */
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = volume;
+    audio.muted = muted;
+  }, [volume, muted]);
+
+  function changeVolume(next) {
+    setVolume(next);
+    localStorage.setItem(VOLUME_KEY, String(next));
+    if (next > 0 && muted) setMuted(false);
+  }
 
   /* --- transport -------------------------------------------------------- */
   const togglePlay = useCallback(() => {
@@ -291,6 +321,15 @@ export function Player({ documentId, onToast, onExit }) {
           const audio = event.currentTarget;
           setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
           audio.playbackRate = rate;
+          // The volume effect below only re-fires when volume/muted change —
+          // not when this element first mounts, since it doesn't exist until
+          // doc.status is "ready" and neither value has changed since the
+          // component's initial state. Applying it here, once, at the moment
+          // the element actually appears, is what makes the initial value
+          // (loaded from localStorage) actually stick instead of silently
+          // sitting at the browser's default of 1.
+          audio.volume = volume;
+          audio.muted = muted;
           setMetadataReady(true);
         }}
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
@@ -317,6 +356,7 @@ export function Player({ documentId, onToast, onExit }) {
           <h1 className="t-title">{title}</h1>
           <p className="t-subhead secondary">
             {doc.page_count} pages · {formatDuration(doc.total_duration_sec)}
+            {doc.voice ? ` · ${voiceDisplayName(doc.voice)}` : ""}
             {currentPage ? ` · Page ${currentPage.page_number}` : ""}
           </p>
         </div>
@@ -396,6 +436,34 @@ export function Player({ documentId, onToast, onExit }) {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="volume-row">
+          <button
+            type="button"
+            className="btn btn--icon"
+            onClick={() => setMuted((m) => !m)}
+            aria-label={muted || volume === 0 ? "Unmute" : "Mute"}
+            title={muted || volume === 0 ? "Unmute" : "Mute"}
+          >
+            {muted || volume === 0 ? (
+              <Icon.VolumeMuted width={19} height={19} />
+            ) : (
+              <Icon.Volume width={19} height={19} />
+            )}
+          </button>
+          <input
+            className="slider"
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={muted ? 0 : volume}
+            style={{ "--fill-percent": `${(muted ? 0 : volume) * 100}%` }}
+            onChange={(event) => changeVolume(Number(event.target.value))}
+            aria-label="Volume"
+            aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
+          />
         </div>
 
         <p className="t-footnote secondary kbd-hint" style={{ textAlign: "center" }}>

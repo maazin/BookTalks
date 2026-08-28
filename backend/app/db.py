@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS documents (
     page_count         INTEGER NOT NULL DEFAULT 0,
     status             TEXT    NOT NULL DEFAULT 'pending',
     error_message      TEXT,
-    total_duration_sec REAL
+    total_duration_sec REAL,
+    voice              TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pages (
@@ -62,10 +63,26 @@ def get_conn() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+# Columns added after the initial release. CREATE TABLE IF NOT EXISTS only
+# helps a brand-new database — an existing documents.db on someone's disk
+# needs each of these added explicitly, once, without losing their library.
+_MIGRATIONS = [
+    ("documents", "voice", "ALTER TABLE documents ADD COLUMN voice TEXT"),
+]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, statement in _MIGRATIONS:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(statement)
+
+
 def init_db() -> None:
     config.ensure_dirs()
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         # A document left mid-flight by a crash or restart can never finish on
         # its own — surface it as failed rather than polling forever.
         conn.execute(

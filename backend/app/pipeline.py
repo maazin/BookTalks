@@ -64,6 +64,11 @@ async def _process(document_id: int) -> None:
         store.set_document_status(document_id, "failed", "Uploaded file is missing.")
         return
 
+    doc = store.get_document(document_id)
+    # Chosen at upload time and fixed from here on — narration is pre-rendered,
+    # so there's no "changing the voice" after the fact without redoing it.
+    voice = (doc or {}).get("voice") or config.TTS_VOICE
+
     # 1. Extract and clean.
     store.set_document_status(document_id, "extracting")
     try:
@@ -86,7 +91,7 @@ async def _process(document_id: int) -> None:
     store.set_document_status(document_id, "generating_audio")
     out_dir = document_audio_dir(document_id)
     out_dir.mkdir(parents=True, exist_ok=True)
-    durations = await _narrate_pages(document_id, pages, out_dir)
+    durations = await _narrate_pages(document_id, pages, out_dir, voice)
 
     if not durations:
         _ensure_present(document_id)
@@ -155,10 +160,10 @@ def _page_offsets(
 
 
 async def _narrate_pages(
-    document_id: int, pages: List[str], out_dir: Path
+    document_id: int, pages: List[str], out_dir: Path, voice: str
 ) -> Dict[int, float]:
     """Render every page, a few at a time. Returns {page_number: duration}."""
-    engine = tts.get_engine()
+    engine = tts.get_engine(voice)
     semaphore = asyncio.Semaphore(config.TTS_CONCURRENCY)
     tasks: List[asyncio.Task] = []
     gone = False

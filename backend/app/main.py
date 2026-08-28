@@ -16,6 +16,7 @@ from fastapi import (
     Depends,
     FastAPI,
     File,
+    Form,
     HTTPException,
     Request,
     Response,
@@ -27,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, config, db, pipeline, store
+from . import auth, config, db, pipeline, store, voices
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -93,6 +94,7 @@ def _document_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
         "total_duration_sec": doc["total_duration_sec"],
         "pages_done": doc.get("pages_done", 0),
         "pages_failed": doc.get("pages_failed", 0),
+        "voice": doc.get("voice") or config.TTS_VOICE,
     }
 
 
@@ -116,13 +118,24 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@documents_router.get("/api/voices")
+async def list_voices() -> Dict[str, Any]:
+    return {"default": voices.default_voice(), "voices": await voices.list_voices()}
+
+
 @documents_router.post("/api/documents", status_code=201)
 async def upload_document(
-    background_tasks: BackgroundTasks, file: UploadFile = File(...)
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    voice: str = Form(None),
 ) -> Dict[str, Any]:
     filename = os.path.basename(file.filename or "document.pdf")
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+
+    chosen_voice = voice or voices.default_voice()
+    if not await voices.is_known_voice(chosen_voice):
+        raise HTTPException(status_code=400, detail="Unknown voice.")
 
     config.ensure_dirs()
     tmp_fd, tmp_name = tempfile.mkstemp(suffix=".pdf", dir=config.UPLOAD_DIR)
@@ -159,14 +172,19 @@ async def upload_document(
                 status_code=400, detail="This file isn't a readable PDF."
             ) from exc
 
-        document_id = store.create_document(filename)
+        document_id = store.create_document(filename, chosen_voice)
         store.set_page_count(document_id, page_count)
         shutil.move(tmp_path, pipeline.document_pdf_path(document_id))
     finally:
         tmp_path.unlink(missing_ok=True)
 
     background_tasks.add_task(pipeline.process_document, document_id)
-    return {"id": document_id, "status": "pending", "filename": filename}
+    return {
+        "id": document_id,
+        "status": "pending",
+        "filename": filename,
+        "voice": chosen_voice,
+    }
 
 
 @documents_router.get("/api/documents")

@@ -97,6 +97,18 @@ export const Icon = {
       <path d="M12 7.5V12l3 2" />
     </svg>
   ),
+  Volume: (p) => (
+    <svg {...base} {...p}>
+      <path d="M4 10v4h3.5L12 17.5v-11L7.5 10H4z" strokeLinejoin="round" />
+      <path d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11" />
+    </svg>
+  ),
+  VolumeMuted: (p) => (
+    <svg {...base} {...p}>
+      <path d="M4 10v4h3.5L12 17.5v-11L7.5 10H4z" strokeLinejoin="round" />
+      <path d="m15.5 10.5 4 4M19.5 10.5l-4 4" />
+    </svg>
+  ),
   Logout: (p) => (
     <svg {...base} {...p}>
       <path d="M15 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8" />
