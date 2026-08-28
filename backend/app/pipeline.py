@@ -1,9 +1,11 @@
 """Background processing: PDF in, one narrated mp3 plus a page timeline out.
 
 Single user, one document at a time — a module-level lock is the whole queue.
-Within a document, pages are narrated a few at a time, since each page is an
-independent network round trip and waiting on them one by one is what made
-long books slow.
+Within a document, narration is bounded by a shared semaphore (see
+tts.EdgeTTSEngine) rather than processed one page after another: each TTS
+call carries real, fixed network overhead regardless of how much text it
+carries, so the unit worth bounding concurrency on is the call itself, not
+the page it happens to belong to.
 """
 import asyncio
 import logging
@@ -162,9 +164,18 @@ def _page_offsets(
 async def _narrate_pages(
     document_id: int, pages: List[str], out_dir: Path, voice: str
 ) -> Dict[int, float]:
-    """Render every page, a few at a time. Returns {page_number: duration}."""
-    engine = tts.get_engine(voice)
+    """Render every page. Returns {page_number: duration}.
+
+    Concurrency is bounded once, centrally, inside the TTS engine — shared
+    across every page and every chunk within a page, since a chunk is the
+    actual unit of network cost. Pages themselves aren't gated here: a page
+    with one short paragraph and a page with five dense ones both just ask
+    the engine to synthesize their text, and the engine decides how many
+    real requests are in flight at once, regardless of which page or which
+    chunk they belong to.
+    """
     semaphore = asyncio.Semaphore(config.TTS_CONCURRENCY)
+    engine = tts.get_engine(voice, semaphore=semaphore)
     tasks: List[asyncio.Task] = []
     gone = False
 
@@ -179,31 +190,32 @@ async def _narrate_pages(
                 task.cancel()
 
     async def render(index: int, text: str) -> Tuple[int, Optional[float]]:
-        async with semaphore:
+        if gone:
+            return index, None
+        # A cheap upfront check so a document deleted before this page even
+        # started doesn't bother queuing it — the engine's own semaphore-gated
+        # check (see tts.py) covers deletion happening after that point.
+        if store.get_document(document_id) is None:
+            stop_everything()
+            return index, None
+
+        page_path = out_dir / f"page_{index}.mp3"
+        try:
+            duration = await engine.synthesize(text, page_path)
+        except Exception as exc:  # noqa: BLE001
             if gone:
                 return index, None
-            # Checked per page so a deletion stops the job promptly.
             if store.get_document(document_id) is None:
+                # The failure is the deletion, not the page.
                 stop_everything()
                 return index, None
+            log.error("Page %s of document %s failed: %s", index, document_id, exc)
+            page_path.unlink(missing_ok=True)
+            store.mark_page_failed(document_id, index)
+            return index, None
 
-            page_path = out_dir / f"page_{index}.mp3"
-            try:
-                duration = await engine.synthesize(text, page_path)
-            except Exception as exc:  # noqa: BLE001
-                if gone:
-                    return index, None
-                if store.get_document(document_id) is None:
-                    # The failure is the deletion, not the page.
-                    stop_everything()
-                    return index, None
-                log.error("Page %s of document %s failed: %s", index, document_id, exc)
-                page_path.unlink(missing_ok=True)
-                store.mark_page_failed(document_id, index)
-                return index, None
-
-            store.mark_page_done(document_id, index, str(page_path), duration)
-            return index, duration
+        store.mark_page_done(document_id, index, str(page_path), duration)
+        return index, duration
 
     tasks = [
         asyncio.create_task(render(index, text))

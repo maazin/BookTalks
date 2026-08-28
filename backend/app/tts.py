@@ -24,6 +24,11 @@ class TTSError(Exception):
     pass
 
 
+class _DocumentDeleted(Exception):
+    """Internal signal that the destination folder vanished mid-render — not
+    a transport failure, so it skips the retry/backoff path below."""
+
+
 class Engine(Protocol):
     async def synthesize(self, text: str, out_path: Path) -> float:
         """Render `text` to an mp3 at `out_path`; return its duration in seconds."""
@@ -68,25 +73,61 @@ def chunk_text(text: str, limit: int | None = None) -> List[str]:
 
 
 class EdgeTTSEngine:
-    """Microsoft Edge's online TTS voices, via the edge-tts client."""
+    """Microsoft Edge's online TTS voices, via the edge-tts client.
 
-    def __init__(self, voice: str = None, rate: str = None):
+    Every call opens a fresh websocket connection to Microsoft's service —
+    the library has no way to reuse one — which costs roughly a second of
+    handshake overhead before any audio comes back, on top of however long
+    the text itself takes to speak. `semaphore` bounds how many of those
+    connections are open at once across an entire document: shared across
+    every page and, importantly, every chunk within a page, so a dense page
+    that needs 3 requests doesn't quietly buy itself 3x the concurrency
+    budget of a page that needs 1.
+    """
+
+    def __init__(
+        self,
+        voice: str = None,
+        rate: str = None,
+        semaphore: asyncio.Semaphore = None,
+    ):
         self.voice = voice or config.TTS_VOICE
         self.rate = rate or config.TTS_RATE
+        # A fresh semaphore when none is supplied — standalone use (tests,
+        # scripts) still gets sane bounded concurrency for multi-chunk text.
+        self.semaphore = semaphore or asyncio.Semaphore(config.TTS_CONCURRENCY)
 
     async def _render_chunk(self, text: str, out_path: Path) -> None:
         last_error: Exception | None = None
         for attempt in range(1, config.TTS_MAX_RETRIES + 1):
-            # If the destination has vanished, the document was deleted while
-            # this page was in flight. Retrying can only fail again.
-            if not out_path.parent.is_dir():
-                raise TTSError("the destination folder no longer exists")
             try:
-                communicate = edge_tts.Communicate(text, self.voice, rate=self.rate)
-                await communicate.save(str(out_path))
+                # Held only around the network call, not the retry backoff
+                # below — a chunk waiting out a failure shouldn't sit on a
+                # concurrency slot that other chunks could be using.
+                async with self.semaphore:
+                    # Checked here, freshly, right as each slot is actually
+                    # granted — not before waiting for one. With hundreds of
+                    # chunks all queued on the same semaphore, checking only
+                    # at task start would mean everything passes the check in
+                    # the first instant and then never looks again; a document
+                    # deleted mid-book wouldn't be noticed until the very end.
+                    # Checking here instead gives the same responsiveness the
+                    # old page-level-only concurrency gate had: a deletion
+                    # gets caught within roughly one call's duration, at
+                    # whatever rate slots are actually turning over.
+                    if not out_path.parent.is_dir():
+                        raise _DocumentDeleted()
+                    communicate = edge_tts.Communicate(text, self.voice, rate=self.rate)
+                    await communicate.save(str(out_path))
                 if out_path.exists() and out_path.stat().st_size > 0:
                     return
                 raise TTSError("edge-tts returned an empty audio file")
+            except _DocumentDeleted:
+                # Not a transport failure — retrying only wastes a backoff
+                # cycle on something that can't succeed differently next time.
+                # Deliberately outside the generic except below.
+                out_path.unlink(missing_ok=True)
+                raise TTSError("the destination folder no longer exists") from None
             except Exception as exc:  # noqa: BLE001 - retry any transport failure
                 last_error = exc
                 out_path.unlink(missing_ok=True)
@@ -111,12 +152,31 @@ class EdgeTTSEngine:
             await self._render_chunk(chunks[0], out_path)
             return await asyncio.to_thread(audio.duration_sec, out_path)
 
-        part_paths: List[Path] = []
+        # Chunks are independent renders that only need to land in order at
+        # the end — running them concurrently (still bounded by the shared
+        # semaphore above) rather than one after another is what keeps a
+        # dense page from taking several times as long as a plain one. This
+        # used to be a sequential loop; on a real multi-chunk page that meant
+        # paying the ~1s-per-call connection overhead serially, in full, once
+        # per chunk — an 11-second page that should have taken 2.
+        part_paths = [
+            out_path.with_name(f"{out_path.stem}.part{index:03d}.mp3")
+            for index in range(len(chunks))
+        ]
+        tasks = [
+            asyncio.ensure_future(self._render_chunk(chunk, part))
+            for chunk, part in zip(chunks, part_paths)
+        ]
         try:
-            for index, chunk in enumerate(chunks):
-                part = out_path.with_name(f"{out_path.stem}.part{index:03d}.mp3")
-                await self._render_chunk(chunk, part)
-                part_paths.append(part)
+            try:
+                await asyncio.gather(*tasks)
+            except Exception:
+                # One chunk failing for good means the page has failed; don't
+                # leave its siblings still running in the background.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             # A page is itself a part of the finished book, so it carries no
             # header of its own.
             return await asyncio.to_thread(
@@ -127,6 +187,6 @@ class EdgeTTSEngine:
                 part.unlink(missing_ok=True)
 
 
-def get_engine(voice: str = None) -> Engine:
+def get_engine(voice: str = None, semaphore: asyncio.Semaphore = None) -> Engine:
     """The single place that decides which TTS backend the app uses."""
-    return EdgeTTSEngine(voice=voice)
+    return EdgeTTSEngine(voice=voice, semaphore=semaphore)

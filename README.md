@@ -68,17 +68,34 @@ lock and their own idea of what's in flight.
 
 ## Speed
 
-Narration is the only slow part, and it's network-bound, so pages are sent five
-at a time. Measured on a 30-page book (12.7 minutes of audio):
+Narration is the only slow part, and it's network-bound: every call to
+edge-tts opens a fresh connection and pays roughly a second of handshake
+overhead before any audio comes back, regardless of how much text is in the
+request. Two things follow from that.
+
+**Pages are narrated several at a time**, not one after another — the
+concurrency limit (`BOOKTALKS_TTS_CONCURRENCY`, 5 by default) bounds how many
+of those network calls are in flight at once. Measured on a 30-page book
+(12.7 minutes of audio):
 
 | | Time |
 |---|---|
 | One page at a time | 61.5 s |
 | Five at a time (default) | 10.4 s |
 
+**Long pages are split into chunks** (edge-tts is more reliable under a
+per-request size limit), and those chunks share the same concurrency pool as
+everything else — a dense page needing 3 requests doesn't wait for them one
+after another. On a page dense enough to need 2 chunks, rendering them
+serially (the original approach) took **9–11 s**; concurrently, **1.5–2 s** —
+because the fixed per-call overhead was being paid twice, in full, instead of
+once. On a whole 10-page document at that density, end to end: **13 s**.
+
 Assembly is stream-copy, not re-encode: five hours of audio joins in about four
 seconds. Raise `BOOKTALKS_TTS_CONCURRENCY` for more speed, lower it if the TTS
-service starts refusing requests.
+service starts refusing requests — and expect real-world numbers to vary more
+than these, since they depend on an external service's response time, which
+fluctuates run to run.
 
 ## Deploying it publicly
 
