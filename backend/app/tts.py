@@ -97,7 +97,22 @@ class EdgeTTSEngine:
         # scripts) still gets sane bounded concurrency for multi-chunk text.
         self.semaphore = semaphore or asyncio.Semaphore(config.TTS_CONCURRENCY)
 
-    async def _render_chunk(self, text: str, out_path: Path) -> None:
+    async def _render_chunk(self, text: str, out_path: Path) -> float | None:
+        """Render one chunk. Returns its duration in seconds when edge-tts's
+        own timing metadata was available, else None (caller falls back to
+        measuring the file directly).
+
+        edge-tts already reports exactly this — the offset and duration of
+        the last sentence boundary, in the same response that carries the
+        audio — because it's how the library builds word-synced subtitles.
+        Capturing it here means most pages never need to shell out to
+        ffprobe just to answer "how long is this audio", which is one fewer
+        process spawned per page. That's negligible wall-clock time on
+        typical hardware, but on a CPU-throttled deployment (a free-tier
+        instance capped at a fraction of a core, say) spawning a process is
+        real, non-free work, and it was previously paid once for every
+        single page regardless of how little content that page had.
+        """
         last_error: Exception | None = None
         for attempt in range(1, config.TTS_MAX_RETRIES + 1):
             try:
@@ -118,10 +133,21 @@ class EdgeTTSEngine:
                     if not out_path.parent.is_dir():
                         raise _DocumentDeleted()
                     communicate = edge_tts.Communicate(text, self.voice, rate=self.rate)
-                    await communicate.save(str(out_path))
-                if out_path.exists() and out_path.stat().st_size > 0:
-                    return
-                raise TTSError("edge-tts returned an empty audio file")
+                    last_offset = last_duration = None
+                    with open(out_path, "wb") as handle:
+                        async for message in communicate.stream():
+                            if message["type"] == "audio":
+                                handle.write(message["data"])
+                            elif message["type"] in ("SentenceBoundary", "WordBoundary"):
+                                last_offset = message["offset"]
+                                last_duration = message["duration"]
+                if not (out_path.exists() and out_path.stat().st_size > 0):
+                    raise TTSError("edge-tts returned an empty audio file")
+                if last_offset is None:
+                    return None
+                # Ticks are 100ns each — Microsoft's usual convention (also
+                # how edge-tts's own SubMaker converts these same fields).
+                return (last_offset + last_duration) / 10_000_000
             except _DocumentDeleted:
                 # Not a transport failure — retrying only wastes a backoff
                 # cycle on something that can't succeed differently next time.
@@ -149,7 +175,11 @@ class EdgeTTSEngine:
 
         chunks = chunk_text(text)
         if len(chunks) == 1:
-            await self._render_chunk(chunks[0], out_path)
+            duration = await self._render_chunk(chunks[0], out_path)
+            if duration is not None:
+                return duration
+            # No metadata came back for some reason — measure the file
+            # directly rather than guess.
             return await asyncio.to_thread(audio.duration_sec, out_path)
 
         # Chunks are independent renders that only need to land in order at

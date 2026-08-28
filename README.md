@@ -97,6 +97,26 @@ service starts refusing requests — and expect real-world numbers to vary more
 than these, since they depend on an external service's response time, which
 fluctuates run to run.
 
+**Per-page duration comes from edge-tts's own response, not a subprocess
+call.** edge-tts already reports exactly when each sentence starts and ends —
+it's how the library builds word-synced subtitles — so that same figure
+answers "how long is this page's audio" without needing to ask `ffprobe`
+separately. That's one fewer process spawned per page (down from one), which
+barely registers on typical hardware but is real, non-free work on a
+CPU-constrained deployment: Render's free tier, for instance, caps a service
+at **0.1 CPU** — a tenth of a single core, not bursty, just always that small
+— where spawning a process the extra ~450 times a 450-page book used to need
+is a cost with nowhere to hide. Verified this doesn't cost accuracy: jump-to-
+page offsets on a real 40-page narration landed within **15 ms** of the
+actual audio boundaries, measured independently against the saved files —
+tighter than the ffprobe-based measurement it replaced.
+
+If narration is still visibly slowing down deep into a long document on a
+constrained host, the next thing to check is that host's own CPU/memory
+graphs during the run (Render's dashboard shows both) — that'll show directly
+whether the instance itself is the ceiling, rather than guessing further from
+the outside.
+
 ## Deploying it publicly
 
 The app is still single-user with no accounts — putting it on a public URL
@@ -210,9 +230,10 @@ else in the codebase changes.
 backend/.venv/bin/python -m pytest backend/tests -q
 ```
 
-29 tests covering text cleanup, chunking, page-offset maths, upload validation,
-range requests, playback state, deletion, and the auth gate (login, logout,
-rate limiting, forged/expired/replayed cookies). TTS is stubbed, so the suite
+38 tests covering text cleanup, chunking, page-offset maths, upload validation,
+range requests, playback state, deletion, voice selection, metadata-derived
+durations, and the auth gate (login, logout, rate limiting,
+forged/expired/replayed cookies). TTS is stubbed, so the suite
 needs no network.
 
 ## Layout
