@@ -1,0 +1,33 @@
+# Render Blueprint — one service, built from the combined root Dockerfile.
+# Render reads this automatically when you create a Blueprint from this repo.
+services:
+  - type: web
+    name: booktalks
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      # Prompted for in the Render dashboard on first deploy — never committed.
+      - key: BOOKTALKS_PASSWORD
+        sync: false
+      # Signs session cookies; Render generates a random value for you.
+      - key: BOOKTALKS_SESSION_SECRET
+        generateValue: true
+      - key: BOOKTALKS_SECURE_COOKIES
+        value: "true"
+      # Free plan has no persistent disk, so /data resets on every deploy and
+      # occasionally on restart. Uncomment the disk block below (and switch
+      # plan to starter or above) once you want a library that actually
+      # survives — see the README for the tradeoff.
+      - key: BOOKTALKS_DATA_DIR
+        value: /data
+      # Lower than the local default: free-plan instances have 512 MB of RAM,
+      # and five concurrent edge-tts + ffmpeg calls can be tight.
+      - key: BOOKTALKS_TTS_CONCURRENCY
+        value: "3"
+    # disk:
+    #   name: booktalks-data
+    #   mountPath: /data
+    #   sizeGB: 1

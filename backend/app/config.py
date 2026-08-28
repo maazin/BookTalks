@@ -1,4 +1,10 @@
-"""Runtime configuration. Everything is local; no secrets, no cloud."""
+"""Runtime configuration.
+
+Local use needs none of this to be set — every value here has a default that
+keeps the app working with zero configuration. The auth settings only turn on
+once BOOKTALKS_PASSWORD is set, which is what a public deployment needs and a
+laptop doesn't.
+"""
 import os
 from pathlib import Path
 
@@ -37,6 +43,25 @@ CORS_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+
+
+# --- access control ---------------------------------------------------------
+# Unset (the default) means no login is required, which is right for a tool
+# that only ever listens on localhost. Set BOOKTALKS_PASSWORD to require one —
+# do this before putting the app behind a public URL.
+AUTH_PASSWORD = os.getenv("BOOKTALKS_PASSWORD") or None
+# Signs session cookies. Falls back to the password itself so a minimal
+# deployment only has to set one secret; set it separately if you'd rather
+# sessions survive a password change.
+AUTH_SESSION_SECRET = os.getenv("BOOKTALKS_SESSION_SECRET") or AUTH_PASSWORD or ""
+AUTH_SESSION_DAYS = int(os.getenv("BOOKTALKS_SESSION_DAYS", "30"))
+# Marks the session cookie Secure (HTTPS-only). Turn on for any public
+# deployment; leave off for plain-HTTP local use, where the browser would
+# silently refuse to store a Secure cookie at all.
+SECURE_COOKIES = os.getenv("BOOKTALKS_SECURE_COOKIES", "false").lower() == "true"
+# Failed logins allowed per IP within the window below before a 429.
+AUTH_RATE_LIMIT = int(os.getenv("BOOKTALKS_AUTH_RATE_LIMIT", "10"))
+AUTH_RATE_WINDOW_SEC = int(os.getenv("BOOKTALKS_AUTH_RATE_WINDOW_SEC", "300"))
 
 
 def ensure_dirs() -> None:

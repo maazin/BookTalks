@@ -686,6 +686,41 @@ input[type="range"].slider:active::-webkit-slider-thumb { transform: scale(1.25)
 
 .page-row__time { color: var(--label-secondary); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
 
+/* --- login ---------------------------------------------------------------- */
+
+.login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 52px);
+  padding: 24px;
+}
+
+.login__card {
+  width: 100%;
+  max-width: 320px;
+}
+
+.login__input {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  color: var(--label);
+  font-size: 1rem;
+  transition: border-color var(--dur) var(--ease);
+}
+
+.login__input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.login__input[aria-invalid="true"] {
+  border-color: var(--red);
+}
+
 /* --- dialog ------------------------------------------------------------- */
 
 .scrim {

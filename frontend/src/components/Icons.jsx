@@ -97,6 +97,12 @@ export const Icon = {
       <path d="M12 7.5V12l3 2" />
     </svg>
   ),
+  Logout: (p) => (
+    <svg {...base} {...p}>
+      <path d="M15 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8" />
+      <path d="M10 12h11m0 0-3.5-3.5M21 12l-3.5 3.5" />
+    </svg>
+  ),
   Pages: (p) => (
     <svg {...base} {...p}>
       <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H5.5A1.5 1.5 0 0 1 4 15.5z" />

@@ -11,7 +11,9 @@ from typing import Any, Dict, Generator, List
 
 import fitz
 from fastapi import (
+    APIRouter,
     BackgroundTasks,
+    Depends,
     FastAPI,
     File,
     HTTPException,
@@ -25,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import config, db, pipeline, store
+from . import auth, config, db, pipeline, store
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -44,11 +46,21 @@ app = FastAPI(title="BookTalks", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
-    allow_credentials=False,
+    # Only matters for a split frontend/backend deployment (e.g. `vite dev`
+    # proxying to the API); the combined image is same-origin and doesn't
+    # need CORS at all. Credentials must be on for the session cookie to
+    # survive that cross-origin case.
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
+
+app.include_router(auth.router)
+
+# Every /api/documents* route requires a session when BOOKTALKS_PASSWORD is
+# set, and requires nothing at all when it isn't — see auth.require_auth.
+documents_router = APIRouter(dependencies=[Depends(auth.require_auth)])
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 STREAM_CHUNK = 256 * 1024
@@ -104,7 +116,7 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/api/documents", status_code=201)
+@documents_router.post("/api/documents", status_code=201)
 async def upload_document(
     background_tasks: BackgroundTasks, file: UploadFile = File(...)
 ) -> Dict[str, Any]:
@@ -157,17 +169,17 @@ async def upload_document(
     return {"id": document_id, "status": "pending", "filename": filename}
 
 
-@app.get("/api/documents")
+@documents_router.get("/api/documents")
 def list_documents() -> List[Dict[str, Any]]:
     return [_document_payload(doc) for doc in store.list_documents()]
 
 
-@app.get("/api/documents/{document_id}")
+@documents_router.get("/api/documents/{document_id}")
 def get_document(document_id: int) -> Dict[str, Any]:
     return _document_payload(_require_document(document_id))
 
 
-@app.get("/api/documents/{document_id}/pages")
+@documents_router.get("/api/documents/{document_id}/pages")
 def get_pages(document_id: int) -> List[Dict[str, Any]]:
     _require_document(document_id)
     pages = store.get_pages(document_id)
@@ -183,7 +195,7 @@ def get_pages(document_id: int) -> List[Dict[str, Any]]:
     ]
 
 
-@app.get("/api/documents/{document_id}/audio")
+@documents_router.get("/api/documents/{document_id}/audio")
 def stream_audio(document_id: int, request: Request) -> Response:
     doc = _require_document(document_id)
     path = pipeline.full_audio_path(document_id)
@@ -237,24 +249,27 @@ def stream_audio(document_id: int, request: Request) -> Response:
     )
 
 
-@app.get("/api/documents/{document_id}/playback")
+@documents_router.get("/api/documents/{document_id}/playback")
 def get_playback(document_id: int) -> Dict[str, Any]:
     _require_document(document_id)
     return store.get_playback(document_id)
 
 
-@app.put("/api/documents/{document_id}/playback")
+@documents_router.put("/api/documents/{document_id}/playback")
 def put_playback(document_id: int, body: PlaybackIn) -> Dict[str, Any]:
     _require_document(document_id)
     return store.upsert_playback(document_id, body.position_sec, body.playback_rate)
 
 
-@app.delete("/api/documents/{document_id}", status_code=204)
+@documents_router.delete("/api/documents/{document_id}", status_code=204)
 def delete_document(document_id: int) -> Response:
     _require_document(document_id)
     store.delete_document(document_id)
     pipeline.remove_document_files(document_id)
     return Response(status_code=204)
+
+
+app.include_router(documents_router)
 
 
 # --- static frontend (production build, when present) ----------------------

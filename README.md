@@ -1,8 +1,9 @@
 # BookTalks
 
 Drop in a PDF, get back a continuous audiobook with speed control, seeking,
-jump-to-page, and a playback position that remembers itself. Runs entirely on
-your machine. No API keys, no cloud services, **$0 to run**.
+jump-to-page, and a playback position that remembers itself. Built to run
+locally at $0 — see [Deploying it publicly](#deploying-it-publicly) if you want
+it reachable somewhere other than your own machine.
 
 <!-- Stack: FastAPI · SQLite · edge-tts · PyMuPDF · ffmpeg · React + Vite -->
 
@@ -79,6 +80,60 @@ Assembly is stream-copy, not re-encode: five hours of audio joins in about four
 seconds. Raise `BOOKTALKS_TTS_CONCURRENCY` for more speed, lower it if the TTS
 service starts refusing requests.
 
+## Deploying it publicly
+
+The app is still single-user with no accounts — putting it on a public URL
+just means the "user" could now be anyone who finds the link. Two things
+change when you do this:
+
+1. **Set a password.** `BOOKTALKS_PASSWORD` turns on a login screen (a signed
+   session cookie, not stored anywhere) gating every `/api/documents*` route.
+   Unset — the default — there's no login at all, which is right for
+   localhost and wrong for anything else. `/api/health` always stays open, for
+   the platform's health checks.
+2. **Decide if the free tier's storage is good enough.** A platform's free
+   plan generally has no persistent disk — `/data` resets on every deploy, and
+   sometimes on a plain restart. Fine for trying it out; not something to keep
+   a real library on without paying for a disk.
+
+### Render (recommended — one container, no CDN split needed)
+
+`render.yaml` at the repo root is a Blueprint: it builds the root `Dockerfile`
+(frontend built and served by the same FastAPI process, so there's one URL, no
+CORS, and the session cookie is first-party) as a single free web service.
+
+1. Push this repo to GitHub (already done if you're reading this from there).
+2. In the Render dashboard: **New → Blueprint**, point it at the repo.
+3. Render reads `render.yaml` and asks for one value it can't generate itself:
+   `BOOKTALKS_PASSWORD`. Set it to whatever you want the login password to be.
+   (`BOOKTALKS_SESSION_SECRET` is auto-generated; everything else in the
+   blueprint has a sensible default.)
+4. Deploy. First build takes a few minutes (it's compiling the frontend and
+   installing ffmpeg); after that Render only rebuilds what changed.
+5. Open the assigned `*.onrender.com` URL — you'll land on the password
+   screen.
+
+Free-plan specifics worth knowing before you rely on it:
+- **Spins down after 15 minutes idle**, cold-starts (~30–60s) on the next
+  request. A book mid-conversion when it spins down won't finish — reasonable
+  for occasional use, annoying if you expect it always-on.
+- **512 MB RAM** — `render.yaml` lowers `BOOKTALKS_TTS_CONCURRENCY` to 3 from
+  the local default of 5 to leave headroom.
+- **No persistent disk** — your library is wiped on every redeploy. Uncomment
+  the `disk:` block in `render.yaml` and move to the Starter plan (~$7/mo
+  instance + ~$1/GB/mo disk) once that's not acceptable.
+
+### Vercel
+
+Vercel only runs serverless functions — no persistent background jobs, no
+writable disk between requests, both of which this backend needs (audio
+generation happens after the upload request has already returned, and the
+result has to still be there on the next request). It's a good fit for
+*nothing* here as currently built. If you want Vercel specifically, the
+backend still needs to live somewhere that can run a real container (Render,
+Railway, Fly) — that reintroduces the cross-origin cookie problem the combined
+image was built to avoid, and isn't the path this repo is set up for.
+
 ## Using it
 
 - **Speed:** 1×, 1.25×, 1.5×, 2× — the browser's native `playbackRate`, so
@@ -115,8 +170,14 @@ Environment variables, all optional:
 | `BOOKTALKS_TTS_RATE` | `+0%` | Baseline narration speed |
 | `BOOKTALKS_TTS_CONCURRENCY` | `5` | Pages narrated at once; lower it if the TTS service rate limits |
 | `BOOKTALKS_MAX_UPLOAD_MB` | `200` | Upload size ceiling |
-| `BOOKTALKS_CORS_ORIGINS` | localhost dev ports | Only matters for `vite dev` |
+| `BOOKTALKS_CORS_ORIGINS` | localhost dev ports | Only matters for `vite dev` or a split frontend/backend deploy |
 | `BOOKTALKS_STATIC_DIR` | `frontend/dist` | Built UI the API serves, when present |
+| `BOOKTALKS_PASSWORD` | unset (no login) | Set to require a password — see [Deploying it publicly](#deploying-it-publicly) |
+| `BOOKTALKS_SESSION_SECRET` | the password | Signs session cookies; set separately if sessions should survive a password change |
+| `BOOKTALKS_SESSION_DAYS` | `30` | How long a login lasts |
+| `BOOKTALKS_SECURE_COOKIES` | `false` | Mark the session cookie HTTPS-only — turn on for any public deployment |
+| `BOOKTALKS_AUTH_RATE_LIMIT` | `10` | Failed logins allowed per IP before a 429 |
+| `BOOKTALKS_AUTH_RATE_WINDOW_SEC` | `300` | Window the rate limit above resets over |
 
 ## Swapping the TTS engine
 
@@ -132,15 +193,17 @@ else in the codebase changes.
 backend/.venv/bin/python -m pytest backend/tests -q
 ```
 
-19 tests covering text cleanup, chunking, page-offset maths, upload validation,
-range requests, playback state, and deletion. TTS is stubbed, so the suite needs
-no network.
+29 tests covering text cleanup, chunking, page-offset maths, upload validation,
+range requests, playback state, deletion, and the auth gate (login, logout,
+rate limiting, forged/expired/replayed cookies). TTS is stubbed, so the suite
+needs no network.
 
 ## Layout
 
 ```
 backend/app/
   main.py       API endpoints, range streaming, static SPA hosting
+  auth.py       Password gate: signed session cookies, rate limiting
   pipeline.py   Background job: extract → narrate → concatenate
   pdf_text.py   Extraction and cleanup
   tts.py        TTS interface + edge-tts engine
@@ -148,12 +211,17 @@ backend/app/
   store.py      All SQL
   db.py         Schema and connections
 frontend/src/
-  App.jsx       Shell and routing
-  components/   Library, Player, upload, dialogs, icons
+  App.jsx       Shell, routing, auth gate
+  components/   Library, Player, Login, upload, dialogs, icons
   styles.css    Design system (tokens, type scale, components)
+Dockerfile          Combined image (frontend + backend, one process) — hosting
+backend/Dockerfile  API image — local docker-compose
+frontend/Dockerfile nginx image — local docker-compose
+render.yaml         Render Blueprint for the combined image
 ```
 
 ## Not in v1
 
-Multi-user accounts, cloud hosting, OCR for scanned PDFs, a voice picker,
-word-level highlighting, and editing extracted text before narration.
+Multi-user accounts (there's a password, not accounts — see
+[Deploying it publicly](#deploying-it-publicly)), OCR for scanned PDFs, a voice
+picker, word-level highlighting, and editing extracted text before narration.

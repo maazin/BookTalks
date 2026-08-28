@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Library } from "./components/Library.jsx";
 import { Player } from "./components/Player.jsx";
+import { Login } from "./components/Login.jsx";
 import { Icon } from "./components/Icons.jsx";
+import { api, onSessionExpired } from "./lib/api.js";
 
 /** Minimal path router: "/" is the library, "/d/:id" is a player. */
 function routeFromPath(pathname) {
@@ -13,6 +15,28 @@ export default function App() {
   const [route, setRoute] = useState(() => routeFromPath(window.location.pathname));
   const [toast, setToast] = useState(null);
   const [scrolled, setScrolled] = useState(false);
+
+  // null while checking; then { required, authenticated }. Most deployments
+  // (anything without BOOKTALKS_PASSWORD set) never show a login screen at
+  // all — required stays false forever, same as before this existed.
+  const [auth, setAuth] = useState(null);
+
+  const checkAuth = useCallback(() => {
+    api
+      .authStatus()
+      .then(setAuth)
+      // The API being briefly unreachable shouldn't strand people on a blank
+      // screen — assume no gate and let normal request-level error handling
+      // (Library/Player's own retry-on-failure) take it from there.
+      .catch(() => setAuth({ required: false, authenticated: true }));
+  }, []);
+
+  useEffect(checkAuth, [checkAuth]);
+
+  useEffect(() => {
+    onSessionExpired(() => setAuth({ required: true, authenticated: false }));
+    return () => onSessionExpired(null);
+  }, []);
 
   useEffect(() => {
     const onPop = () => setRoute(routeFromPath(window.location.pathname));
@@ -43,6 +67,20 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  // Checking with the server before showing anything avoids a flash of the
+  // library that a locked deployment would immediately hide again.
+  if (auth === null) {
+    return <div className="app" />;
+  }
+
+  if (auth.required && !auth.authenticated) {
+    return (
+      <div className="app">
+        <Login onAuthenticated={() => setAuth({ required: true, authenticated: true })} />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       {/* Navigation-bar convention: the leading slot holds the app name at the
@@ -60,6 +98,19 @@ export default function App() {
           </span>
         )}
         <span className="toolbar__spacer" />
+        {auth.required && (
+          <button
+            type="button"
+            className="btn btn--icon btn--plain"
+            onClick={() => {
+              api.logout().finally(() => setAuth({ required: true, authenticated: false }));
+            }}
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <Icon.Logout width={19} height={19} strokeWidth={1.9} />
+          </button>
+        )}
       </header>
 
       <main className="container">
