@@ -1,0 +1,20 @@
+# data and generated audio
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# node
+frontend/node_modules/
+frontend/dist/
+
+# os
+.DS_Store
+
+# pytest
+.pytest_cache/

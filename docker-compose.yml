@@ -1,0 +1,30 @@
+services:
+  api:
+    build: ./backend
+    # Uploads, generated audio, and the SQLite file live here on the host, so
+    # your library survives a rebuild. On Linux the container writes as root;
+    # add `user: "${UID}:${GID}"` if you want host-owned files.
+    volumes:
+      - ./data:/data
+    environment:
+      # nginx is same-origin in this setup, so CORS only matters for `vite dev`.
+      BOOKTALKS_CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      # Pages narrated at once. Raise for speed, lower if the TTS service
+      # starts rate limiting.
+      BOOKTALKS_TTS_CONCURRENCY: "5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
