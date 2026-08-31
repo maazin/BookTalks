@@ -177,6 +177,45 @@ With `cloudflared` installed (`brew install cloudflared`) and no Tailscale, the
 same script falls back to a Cloudflare quick tunnel. Nothing to configure, but
 **the URL changes every run**, which gets old fast for someone non-technical.
 
+### Keeping it running
+
+`./scripts/share.sh` stops when you close the terminal. To keep it up, save
+the password once and run it under launchd:
+
+```bash
+mkdir -p ~/.booktalks && chmod 700 ~/.booktalks
+printf "BOOKTALKS_PASSWORD='your-password'\n" > ~/.booktalks/env
+chmod 600 ~/.booktalks/env
+launchctl load ~/Library/LaunchAgents/com.booktalks.share.plist
+```
+
+The script reads that file when no password is passed, so the secret stays out
+of the plist (LaunchAgent plists are world-readable) and out of your shell
+history. `KeepAlive` restarts it if it crashes, and `RunAtLoad` brings it back
+at login. Logs land in `~/.booktalks/logs/`.
+
+Stop it with `launchctl unload ~/Library/LaunchAgents/com.booktalks.share.plist`.
+
+### If it says "can't connect"
+
+Almost always one of three things, in order of likelihood:
+
+1. **Nothing is running.** The link only answers while the service is up.
+   `launchctl list | grep booktalks`, and `curl -s localhost:8000/api/auth/status`.
+2. **DNS doesn't resolve `.ts.net` on that network.** This is the fragile part
+   of Funnel. Filtered/corporate/university resolvers often NXDOMAIN it, and
+   even public resolvers disagree — during setup here, `8.8.8.8`, `9.9.9.9`
+   and OpenDNS all answered while Cloudflare's `1.1.1.1` returned nothing for
+   the same name. Check with
+   `dig +short @8.8.8.8 <host>.ts.net` versus `@1.1.1.1`. If public DNS
+   answers, the tunnel is fine and it's the resolver — switching that device's
+   DNS to 8.8.8.8 fixes it.
+3. **Funnel got turned off.** `tailscale --socket=... funnel status`.
+
+If DNS turns out to be unreliable on the networks she actually uses, Funnel is
+the wrong tool for her — a real host with a normal domain is worth the few
+dollars, since neither of you can debug her carrier's resolver.
+
 ### Either way
 
 The link only works while the command is running, so your machine has to be

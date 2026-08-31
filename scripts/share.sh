@@ -17,6 +17,18 @@ PORT="${PORT:-8000}"
 
 command -v ffmpeg >/dev/null || { echo "ffmpeg is required (brew install ffmpeg)"; exit 1; }
 
+# Fall back to a saved password so this can run unattended (see the LaunchAgent
+# in the README) without the secret living in a plist or a shell history.
+ENV_FILE="${BOOKTALKS_ENV_FILE:-$HOME/.booktalks/env}"
+if [ -z "${BOOKTALKS_PASSWORD:-}" ] && [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+fi
+# Must be exported, not just set: the app runs as a child process and only
+# sees exported variables. Sourcing alone left the password in this shell
+# while the app started with no password at all — open to the whole internet.
+export BOOKTALKS_PASSWORD
+
 # This URL is reachable by anyone who has it, so a password is not optional.
 if [ -z "${BOOKTALKS_PASSWORD:-}" ]; then
   cat <<'MSG'
@@ -56,10 +68,16 @@ fi
 (cd frontend && npm run build)
 
 LOG="$(mktemp -t booktalks-tunnel)"
+APP_PID=""
+TUNNEL_PID=""
 cleanup() {
   # Take the funnel down so the URL stops answering when you stop sharing.
   [ "$MODE" = "funnel" ] && tailscale --socket="$TS_SOCK" funnel --https=443 off >/dev/null 2>&1 || true
-  kill 0 2>/dev/null || true
+  # Kill only what this script started. `kill 0` would signal the whole
+  # process group, which from an interactive shell can take unrelated
+  # processes down with it.
+  [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
+  [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
   rm -f "$LOG"
 }
 trap cleanup EXIT INT TERM
@@ -67,11 +85,28 @@ trap cleanup EXIT INT TERM
 echo "Starting BookTalks on 127.0.0.1:${PORT}…"
 (cd backend && exec ../backend/.venv/bin/python -m uvicorn app.main:app \
     --host 127.0.0.1 --port "$PORT") &
+APP_PID=$!
 
 for _ in $(seq 1 60); do
   curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 && break
   sleep 1
 done
+
+# Never open a tunnel to an app that isn't actually asking for a password.
+# Checked against the running app rather than trusting that setting the
+# variable worked — the app is the only thing that knows whether auth is on.
+AUTH_REQUIRED="$(curl -sf "http://127.0.0.1:${PORT}/api/auth/status" 2>/dev/null \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin).get("required"))' 2>/dev/null || echo "unknown")"
+if [ "$AUTH_REQUIRED" != "True" ]; then
+  echo
+  echo "Refusing to open the tunnel: the app reports that no password is required"
+  echo "(/api/auth/status said required=${AUTH_REQUIRED}). Publishing it now would"
+  echo "put your library on the internet with no protection."
+  echo
+  echo "Check that BOOKTALKS_PASSWORD is exported and non-empty, or that"
+  echo "${ENV_FILE} sets it."
+  exit 1
+fi
 
 if [ "$MODE" = "funnel" ]; then
   echo "Opening the Tailscale Funnel…"
@@ -90,6 +125,7 @@ if [ "$MODE" = "funnel" ]; then
 else
   echo "Opening a Cloudflare quick tunnel…"
   cloudflared tunnel --url "http://127.0.0.1:${PORT}" --no-autoupdate > "$LOG" 2>&1 &
+  TUNNEL_PID=$!
   URL=""
   for _ in $(seq 1 60); do
     URL="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" | head -1 || true)"
@@ -123,4 +159,4 @@ echo "   Press Ctrl-C to stop sharing."
 echo "  ────────────────────────────────────────────────────────"
 echo
 
-wait
+wait "$APP_PID"
