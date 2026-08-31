@@ -121,9 +121,33 @@ async def _process(document_id: int) -> None:
     _ensure_present(document_id)
     store.set_page_offsets(document_id, offsets)
     store.finish_document(document_id, total)
+
+    # 4. Drop the per-page files. Nothing serves them — only full.mp3 is ever
+    # streamed — so keeping them meant every audiobook occupied twice the disk
+    # it needed to, forever. Safe to do only here: concat_mp3s returns a
+    # duration read back off the finished file, so reaching this line means
+    # full.mp3 exists and is readable.
+    freed = await asyncio.to_thread(_remove_page_files, parts)
+    store.clear_page_audio_paths(document_id)
+
     log.info(
-        "Document %s ready: %s pages, %.1f seconds", document_id, len(pages), total
+        "Document %s ready: %s pages, %.1f seconds (freed %.0f MB of page files)",
+        document_id, len(pages), total, freed / (1024 * 1024),
     )
+
+
+def _remove_page_files(parts: List[Path]) -> int:
+    """Delete the intermediate per-page mp3s. Returns bytes reclaimed."""
+    freed = 0
+    for part in parts:
+        try:
+            freed += part.stat().st_size
+            part.unlink()
+        except OSError:
+            # A page file already gone is not a problem worth failing over —
+            # the finished audiobook is already written and recorded.
+            pass
+    return freed
 
 
 def _page_offsets(

@@ -23,10 +23,11 @@ services:
       # survives — see the README for the tradeoff.
       - key: BOOKTALKS_DATA_DIR
         value: /data
-      # Lower than the local default: free-plan instances have 512 MB of RAM,
-      # and five concurrent edge-tts + ffmpeg calls can be tight.
+      # Below the local default of 16: free-plan instances get 512 MB of RAM
+      # and 0.1 CPU, and every concurrent connection costs memory plus TLS
+      # handshake CPU. 8 is still a large speedup over the 3 this used to be.
       - key: BOOKTALKS_TTS_CONCURRENCY
-        value: "3"
+        value: "8"
     # disk:
     #   name: booktalks-data
     #   mountPath: /data

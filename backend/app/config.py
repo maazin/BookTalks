@@ -23,10 +23,19 @@ TTS_RATE = os.getenv("BOOKTALKS_TTS_RATE", "+0%")
 TTS_MAX_RETRIES = int(os.getenv("BOOKTALKS_TTS_RETRIES", "3"))
 # Long pages are split into chunks at sentence boundaries for reliability.
 TTS_CHUNK_CHARS = int(os.getenv("BOOKTALKS_TTS_CHUNK_CHARS", "2200"))
-# Pages narrated at once. Each is an independent request, so a handful in
-# flight turns a long book from a serial crawl into a short wait; too many
-# invites rate limiting.
-TTS_CONCURRENCY = max(1, int(os.getenv("BOOKTALKS_TTS_CONCURRENCY", "5")))
+# How many TTS requests are in flight at once (counted in chunks, not pages —
+# see tts.EdgeTTSEngine). This is almost pure network waiting, so it scales
+# well past what feels intuitive. Measured on a real 345-page book, pages/sec:
+#
+#     5 -> 1.7    10 -> 2.8    16 -> 4.7-5.4    24 -> 6.1    32 -> 9.3
+#
+# with zero failures throughout; past ~32 the numbers get noisy without
+# reliably getting better. 16 is the default rather than the peak: it's a ~3x
+# speedup over the old value of 5, sits well inside the range that never
+# errored, and leaves headroom on small instances, where every extra
+# connection costs memory and TLS handshake CPU. Raise it if your host can
+# take it; lower it if the service starts refusing requests.
+TTS_CONCURRENCY = max(1, int(os.getenv("BOOKTALKS_TTS_CONCURRENCY", "16")))
 
 MAX_UPLOAD_BYTES = int(os.getenv("BOOKTALKS_MAX_UPLOAD_MB", "200")) * 1024 * 1024
 

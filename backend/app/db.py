@@ -44,7 +44,12 @@ CREATE TABLE IF NOT EXISTS playback_state (
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(config.DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # journal_mode is deliberately NOT set here: it's a persistent property of
+    # the database file, not of a connection, so setting it once in init_db()
+    # is enough. It was measured at ~0.33ms of the ~0.4ms each connection cost
+    # — over 80% of the total — and narrating a long book opens thousands of
+    # short-lived connections. foreign_keys and busy_timeout genuinely are
+    # per-connection and do have to be set every time.
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=30000")
     return conn
@@ -80,6 +85,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def init_db() -> None:
     config.ensure_dirs()
+    # Persistent, stored in the database file itself — set once here rather
+    # than on every connection. See connect() for why that matters.
+    with get_conn() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)

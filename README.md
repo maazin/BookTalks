@@ -49,13 +49,13 @@ FastAPI with `--reload` on :8000, Vite with HMR on **http://localhost:5173**
    across line breaks (`exam-\nple` → `example`), drops running
    headers/footers/page numbers that repeat across the document, and reflows
    wrapped lines into paragraphs so the narration sounds like prose.
-3. **Narrate** — pages go to `edge-tts` five at a time and land as
+3. **Narrate** — pages go to `edge-tts` sixteen requests at a time and land as
    `data/audio/{id}/page_{n}.mp3`. A page that fails is marked failed and
    skipped; one bad page never sinks the document.
 4. **Assemble** — pages are concatenated into `data/audio/{id}/full.mp3` with
-   ffmpeg in stream-copy mode — nothing is re-encoded, so a five-hour book is
-   assembled in about four seconds — and each page's start offset is written
-   back to the database.
+   ffmpeg in stream-copy mode — nothing is re-encoded, so thirteen hours of
+   audio is assembled in about ten seconds — each page's start offset is
+   written back to the database, and the per-page files are then deleted.
 5. **Play** — the player streams that file with HTTP range requests, so seeking
    is instant and nothing has to download up front.
 
@@ -68,54 +68,45 @@ lock and their own idea of what's in flight.
 
 ## Speed
 
-Narration is the only slow part, and it's network-bound: every call to
-edge-tts opens a fresh connection and pays roughly a second of handshake
-overhead before any audio comes back, regardless of how much text is in the
-request. Two things follow from that.
+Narration is network-bound: every call to edge-tts opens a fresh connection
+and pays roughly a second of handshake overhead before any audio comes back,
+regardless of how much text is in the request. Almost all of the time is spent
+waiting, not computing, so the throughput lever is **how many requests are in
+flight at once** (`BOOKTALKS_TTS_CONCURRENCY`).
 
-**Pages are narrated several at a time**, not one after another — the
-concurrency limit (`BOOKTALKS_TTS_CONCURRENCY`, 5 by default) bounds how many
-of those network calls are in flight at once. Measured on a 30-page book
-(12.7 minutes of audio):
+Measured end to end on a real 345-page book (13 hours of audio):
 
 | | Time |
 |---|---|
-| One page at a time | 61.5 s |
-| Five at a time (default) | 10.4 s |
+| Concurrency 5 (the old default) | 546 s |
+| **Concurrency 16 (current default)** | **83 s** |
+
+That's the whole book — extraction, 585 narration requests, and assembly —
+with zero failed pages. Isolated sweeps on the same book, in pages/sec:
+
+| concurrency | 5 | 10 | 16 | 24 | 32 |
+|---|---|---|---|---|---|
+| pages/sec | 1.7 | 2.8 | 4.7–5.4 | 6.1 | 9.3 |
+
+No failures at any level tested. Past ~32 the numbers get noisy without
+reliably improving, so 16 is the default: a large speedup that stays well
+inside the range that never errored and leaves headroom on small instances,
+where each connection costs memory and TLS handshake CPU. Raise it if your
+host can take it.
 
 **Long pages are split into chunks** (edge-tts is more reliable under a
-per-request size limit), and those chunks share the same concurrency pool as
-everything else — a dense page needing 3 requests doesn't wait for them one
-after another. On a page dense enough to need 2 chunks, rendering them
-serially (the original approach) took **9–11 s**; concurrently, **1.5–2 s** —
-because the fixed per-call overhead was being paid twice, in full, instead of
-once. On a whole 10-page document at that density, end to end: **13 s**.
+per-request size limit), and chunks share that same concurrency pool — a
+dense page needing 3 requests doesn't run them one after another.
 
-Assembly is stream-copy, not re-encode: five hours of audio joins in about four
-seconds. Raise `BOOKTALKS_TTS_CONCURRENCY` for more speed, lower it if the TTS
-service starts refusing requests — and expect real-world numbers to vary more
-than these, since they depend on an external service's response time, which
-fluctuates run to run.
+**Assembly is stream-copy, not re-encode**: 13 hours of audio joins in about
+ten seconds, and nothing is decoded or re-encoded. Per-page duration comes
+from edge-tts's own response rather than a separate `ffprobe` subprocess, so
+most pages spawn no processes at all during narration.
 
-**Per-page duration comes from edge-tts's own response, not a subprocess
-call.** edge-tts already reports exactly when each sentence starts and ends —
-it's how the library builds word-synced subtitles — so that same figure
-answers "how long is this page's audio" without needing to ask `ffprobe`
-separately. That's one fewer process spawned per page (down from one), which
-barely registers on typical hardware but is real, non-free work on a
-CPU-constrained deployment: Render's free tier, for instance, caps a service
-at **0.1 CPU** — a tenth of a single core, not bursty, just always that small
-— where spawning a process the extra ~450 times a 450-page book used to need
-is a cost with nowhere to hide. Verified this doesn't cost accuracy: jump-to-
-page offsets on a real 40-page narration landed within **15 ms** of the
-actual audio boundaries, measured independently against the saved files —
-tighter than the ffprobe-based measurement it replaced.
-
-If narration is still visibly slowing down deep into a long document on a
-constrained host, the next thing to check is that host's own CPU/memory
-graphs during the run (Render's dashboard shows both) — that'll show directly
-whether the instance itself is the ceiling, rather than guessing further from
-the outside.
+**Disk**: the per-page mp3s are deleted once they've been folded into the
+finished audiobook — nothing ever serves them, and keeping them meant every
+book occupied twice the disk it needed to. That 345-page book uses **273 MB**
+instead of 543 MB.
 
 ## Deploying it publicly
 
@@ -154,11 +145,17 @@ Free-plan specifics worth knowing before you rely on it:
 - **Spins down after 15 minutes idle**, cold-starts (~30–60s) on the next
   request. A book mid-conversion when it spins down won't finish — reasonable
   for occasional use, annoying if you expect it always-on.
-- **512 MB RAM** — `render.yaml` lowers `BOOKTALKS_TTS_CONCURRENCY` to 3 from
-  the local default of 5 to leave headroom.
-- **No persistent disk** — your library is wiped on every redeploy. Uncomment
-  the `disk:` block in `render.yaml` and move to the Starter plan (~$7/mo
-  instance + ~$1/GB/mo disk) once that's not acceptable.
+- **512 MB RAM and 0.1 CPU** — a tenth of a core, constantly. `render.yaml`
+  lowers `BOOKTALKS_TTS_CONCURRENCY` to 8 from the local default of 16 to
+  leave headroom. Expect conversions to take substantially longer here than
+  the timings above, which were measured on unthrottled hardware.
+- **No persistent disk** — this is the one that bites. Your entire library,
+  database included, is wiped on every redeploy and on restarts. A long book
+  you waited for can simply be gone next time you open the app, which shows up
+  as the player saying the audiobook no longer exists. If you want a library
+  that survives, uncomment the `disk:` block in `render.yaml` and move to the
+  Starter plan (~$7/mo instance + ~$1/GB/mo disk). A 345-page book needs about
+  273 MB, so 1 GB covers a few of them.
 
 ### Vercel
 

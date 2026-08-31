@@ -145,6 +145,17 @@ def set_page_offsets(document_id: int, offsets: Dict[int, float]) -> None:
         )
 
 
+def clear_page_audio_paths(document_id: int) -> None:
+    """Forget the per-page mp3 paths once those files have been folded into
+    the finished audiobook and deleted — the column shouldn't keep pointing
+    at files that are no longer on disk."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE pages SET audio_path = NULL WHERE document_id = ?",
+            (document_id,),
+        )
+
+
 # --- playback state --------------------------------------------------------
 
 def get_playback(document_id: int) -> Dict[str, Any]:

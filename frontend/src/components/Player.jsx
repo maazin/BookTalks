@@ -28,6 +28,7 @@ export function Player({ documentId, onToast, onExit }) {
   const [doc, setDoc] = useState(null);
   const [pages, setPages] = useState([]);
   const [error, setError] = useState(null);
+  const [notFound, setNotFound] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const audioRef = useRef(null);
@@ -62,6 +63,9 @@ export function Player({ documentId, onToast, onExit }) {
         }
       } catch (err) {
         if (cancelled) return;
+        // A 404 gets its own screen rather than a bare error banner — it's
+        // the one failure with a real explanation and a way out.
+        setNotFound(err.status === 404);
         setError(err.message);
         // A missing document stays missing; anything else is worth retrying,
         // so a restarted backend doesn't leave a dead screen behind.
@@ -253,6 +257,34 @@ export function Player({ documentId, onToast, onExit }) {
   const title = doc ? stripExtension(doc.filename) : "";
 
   /* --- render ----------------------------------------------------------- */
+  if (notFound) {
+    return (
+      <section className="card card--pad stack stack-16">
+        <div className="player-hero">
+          <div
+            className="artwork"
+            aria-hidden="true"
+            style={{ background: "var(--fill-strong)", color: "var(--label-secondary)" }}
+          >
+            <Icon.Warning width={48} height={48} strokeWidth={1.5} />
+          </div>
+          <h1 className="t-title">This audiobook is gone</h1>
+        </div>
+        <p className="t-body secondary" style={{ textAlign: "center" }}>
+          It isn't on the server any more. Either it was deleted, or the server
+          restarted without a persistent disk — on hosting plans that don't
+          include one, everything in the library is wiped on every restart and
+          redeploy.
+        </p>
+        <div style={{ display: "flex", justifyContent: "center" }}>
+          <button type="button" className="btn btn--primary" onClick={onExit}>
+            Back to library
+          </button>
+        </div>
+      </section>
+    );
+  }
+
   if (error) {
     return (
       <div className="stack stack-16">
@@ -490,6 +522,13 @@ function ProcessingCard({ doc, title, onDelete, onExit }) {
   const percent =
     doc.page_count > 0 ? Math.round((doc.pages_done / doc.page_count) * 100) : 0;
   const failed = doc.status === "failed";
+  // Every page is narrated but the document isn't ready yet: the server is
+  // stitching them into one file. On a long book that step takes real time,
+  // and without saying so the screen just sits at "345 of 345" looking stuck.
+  const assembling =
+    doc.status === "generating_audio" &&
+    doc.page_count > 0 &&
+    doc.pages_done >= doc.page_count;
 
   return (
     <section className="card card--pad stack stack-16" aria-live="polite">
@@ -526,23 +565,35 @@ function ProcessingCard({ doc, title, onDelete, onExit }) {
       ) : (
         <>
           <p className="t-body secondary" style={{ textAlign: "center" }}>
-            {doc.status === "generating_audio"
-              ? `Narrated ${doc.pages_done} of ${doc.page_count} pages. You can leave this page — it keeps going.`
-              : doc.status === "pending"
-                ? "Waiting for the book ahead of it to finish."
-                : "Reading the text out of your PDF…"}
+            {assembling
+              ? "All pages narrated. Joining them into one audiobook — this is the last step."
+              : doc.status === "generating_audio"
+                ? `Narrated ${doc.pages_done} of ${doc.page_count} pages. You can leave this page — it keeps going.`
+                : doc.status === "pending"
+                  ? "Waiting for the book ahead of it to finish."
+                  : "Reading the text out of your PDF…"}
           </p>
           <div
-            className={`progress${doc.status === "generating_audio" ? "" : " progress--indeterminate"}`}
+            className={`progress${doc.status === "generating_audio" && !assembling ? "" : " progress--indeterminate"}`}
             role="progressbar"
-            aria-valuenow={doc.status === "generating_audio" ? percent : undefined}
+            aria-valuenow={
+              doc.status === "generating_audio" && !assembling ? percent : undefined
+            }
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-label={`${statusLabel(doc.status)}, ${percent}% complete`}
+            aria-label={
+              assembling
+                ? "Joining pages into one audiobook"
+                : `${statusLabel(doc.status)}, ${percent}% complete`
+            }
           >
             <div
               className="progress__fill"
-              style={doc.status === "generating_audio" ? { width: `${percent}%` } : undefined}
+              style={
+                doc.status === "generating_audio" && !assembling
+                  ? { width: `${percent}%` }
+                  : undefined
+              }
             />
           </div>
         </>
