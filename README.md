@@ -118,29 +118,69 @@ BOOKTALKS_PASSWORD='something-only-you-two-know' ./scripts/share.sh
 ```
 
 That builds the app, serves it on `127.0.0.1` (never on your local network),
-and opens a Cloudflare Tunnel to it. It prints a public HTTPS link to share.
-It refuses to start without a password, because that link is reachable by
-anyone who has it.
-
-Requires `cloudflared` (`brew install cloudflared`). No account, no card, no
-port forwarding — the tunnel dials out, so nothing on your router changes.
+opens a tunnel, and prints a public HTTPS link to share. It refuses to start
+without a password, because that link is reachable by anyone who has it.
 
 **Tell her to add it to her home screen** (Share → Add to Home Screen on iOS,
 "Install app" on Android). It then opens like a real app, and the lock-screen
 play/pause/skip controls work — which is most of what listening to a long
 audiobook on a phone involves.
 
-Two caveats worth knowing:
+The script picks the best tunnel available.
 
-- **It only works while that command is running**, so your machine has to be
-  awake. Close the terminal or shut the lid and the link goes dead.
-- **The link changes every time you run it.** Fine occasionally; annoying for
-  someone non-technical. For a permanent address you need a Cloudflare account
-  and a domain, then a *named* tunnel
-  ([docs](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/)) —
-  same script otherwise, and the URL never changes again.
+### A permanent link (Tailscale Funnel)
 
-If you'd rather it be reachable when your machine is off, that's when a real
+Free, and needs no domain. The address never changes, so you send it once.
+
+```bash
+brew install tailscale                      # no sudo needed
+
+# Start the daemon in userspace mode (also no sudo):
+mkdir -p ~/.booktalks-tailscale
+tailscaled --tun=userspace-networking \
+  --statedir=$HOME/.booktalks-tailscale \
+  --socket=$HOME/.booktalks-tailscale/tailscaled.sock &
+
+# Log in — this prints a URL to open in your browser:
+tailscale --socket=$HOME/.booktalks-tailscale/tailscaled.sock up --hostname=booktalks
+```
+
+The first `./scripts/share.sh` after that will use the Funnel automatically and
+print a permanent `https://booktalks.<your-tailnet>.ts.net` address. If
+Tailscale reports that Funnel or HTTPS needs enabling, it prints the exact
+admin-console link to click; that's a one-time step.
+
+`--statedir` (a directory) rather than `--state` (a file) matters: Tailscale
+stores the Funnel's TLS certificate under that var root, and without it
+certificate provisioning fails with `no TailscaleVarRoot` and the URL serves
+nothing over HTTPS.
+
+Two one-time approvals happen in the Tailscale admin console the first time —
+enabling Funnel for the machine, and HTTPS certificates for the tailnet. The
+CLI prints the exact link to click when either is missing.
+
+Worth knowing:
+
+- Funnel traffic goes through Tailscale's network and is subject to a
+  bandwidth cap you can't configure. For this app that's usually fine — the
+  audio is 48 kbps, so an hour of listening is roughly 21 MB.
+- **Some networks don't resolve `.ts.net`.** Corporate, university, and
+  filtered DNS often return NXDOMAIN for it, so the link can look dead from
+  *your* machine while working perfectly for everyone else. Check with
+  `dig +short @1.1.1.1 <your-host>.ts.net` — if public DNS resolves it, the
+  tunnel is fine and it's your local resolver. Pointing that machine at
+  1.1.1.1 or 8.8.8.8 fixes it locally.
+
+### No setup at all (temporary link)
+
+With `cloudflared` installed (`brew install cloudflared`) and no Tailscale, the
+same script falls back to a Cloudflare quick tunnel. Nothing to configure, but
+**the URL changes every run**, which gets old fast for someone non-technical.
+
+### Either way
+
+The link only works while the command is running, so your machine has to be
+awake. If you need it reachable when your machine is off, that's when a real
 host earns its keep — see below.
 
 ## Deploying it publicly
