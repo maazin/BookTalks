@@ -108,6 +108,41 @@ finished audiobook — nothing ever serves them, and keeping them meant every
 book occupied twice the disk it needed to. That 345-page book uses **273 MB**
 instead of 543 MB.
 
+## Sharing it with someone else
+
+If one other person wants to use this from their own phone or laptop, you
+don't need a host at all — run it here and open a tunnel to it:
+
+```bash
+BOOKTALKS_PASSWORD='something-only-you-two-know' ./scripts/share.sh
+```
+
+That builds the app, serves it on `127.0.0.1` (never on your local network),
+and opens a Cloudflare Tunnel to it. It prints a public HTTPS link to share.
+It refuses to start without a password, because that link is reachable by
+anyone who has it.
+
+Requires `cloudflared` (`brew install cloudflared`). No account, no card, no
+port forwarding — the tunnel dials out, so nothing on your router changes.
+
+**Tell her to add it to her home screen** (Share → Add to Home Screen on iOS,
+"Install app" on Android). It then opens like a real app, and the lock-screen
+play/pause/skip controls work — which is most of what listening to a long
+audiobook on a phone involves.
+
+Two caveats worth knowing:
+
+- **It only works while that command is running**, so your machine has to be
+  awake. Close the terminal or shut the lid and the link goes dead.
+- **The link changes every time you run it.** Fine occasionally; annoying for
+  someone non-technical. For a permanent address you need a Cloudflare account
+  and a domain, then a *named* tunnel
+  ([docs](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/)) —
+  same script otherwise, and the URL never changes again.
+
+If you'd rather it be reachable when your machine is off, that's when a real
+host earns its keep — see below.
+
 ## Deploying it publicly
 
 The app is still single-user with no accounts — putting it on a public URL

@@ -46,6 +46,8 @@ export function Player({ documentId, onToast, onExit }) {
   const [savedState, setSavedState] = useState(null);
   const [metadataReady, setMetadataReady] = useState(false);
   const restoredRef = useRef(false);
+  // Last position actually written, so identical saves can be skipped.
+  const lastSavedRef = useRef(null);
 
   /* --- load document, polling while it's still being converted ----------- */
   useEffect(() => {
@@ -131,11 +133,28 @@ export function Player({ documentId, onToast, onExit }) {
     (keepalive = false) => {
       const audio = audioRef.current;
       if (!audio || !ready || !restoredRef.current) return;
-      api
-        .savePlayback(documentId, audio.currentTime || 0, audio.playbackRate || 1, keepalive)
-        .catch(() => {
-          /* a dropped autosave isn't worth interrupting playback for */
-        });
+      const position = audio.currentTime || 0;
+      const playbackRate = audio.playbackRate || 1;
+      // Saving happens on a timer, on pause, and every time the tab is
+      // backgrounded — on a phone that last one fires on every app switch and
+      // screen lock. Skipping writes that wouldn't change anything keeps that
+      // from turning into a stream of redundant requests on a mobile
+      // connection. A full second of drift is far below anything a listener
+      // would notice on resume.
+      const previous = lastSavedRef.current;
+      if (
+        previous &&
+        Math.abs(previous.position - position) < 1 &&
+        previous.playbackRate === playbackRate
+      ) {
+        return;
+      }
+      lastSavedRef.current = { position, playbackRate };
+      api.savePlayback(documentId, position, playbackRate, keepalive).catch(() => {
+        // A dropped autosave isn't worth interrupting playback for, but it
+        // must not count as saved — otherwise the retry would be skipped.
+        lastSavedRef.current = previous;
+      });
     },
     [documentId, ready]
   );
@@ -201,6 +220,75 @@ export function Player({ documentId, onToast, onExit }) {
     (delta) => seekTo((audioRef.current?.currentTime || 0) + delta),
     [seekTo]
   );
+
+  /* --- lock screen / headphone controls ---------------------------------- */
+  // Without this a phone shows nothing useful on the lock screen and the
+  // hardware/headphone buttons do nothing — which is most of what listening
+  // to a 13-hour audiobook on a phone actually involves.
+  useEffect(() => {
+    if (!ready || !("mediaSession" in navigator) || !window.MediaMetadata) return;
+    navigator.mediaSession.metadata = new window.MediaMetadata({
+      // Derived here rather than using the `title` const, which is declared
+      // further down the component — referencing it from this effect's
+      // dependency array would read it before initialization.
+      title: stripExtension(doc?.filename || ""),
+      artist: doc?.voice ? `Narrated by ${voiceDisplayName(doc.voice)}` : "BookTalks",
+      album: "BookTalks",
+      artwork: [
+        { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
+        { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
+      ],
+    });
+
+    const handlers = {
+      play: () => audioRef.current?.play(),
+      pause: () => audioRef.current?.pause(),
+      seekbackward: (e) => skip(-(e?.seekOffset || SKIP_SECONDS)),
+      seekforward: (e) => skip(e?.seekOffset || SKIP_SECONDS),
+      // Previous/next map to skip too: a book is one long track, so the
+      // track buttons are far more useful as a jump than as a no-op.
+      previoustrack: () => skip(-SKIP_SECONDS),
+      nexttrack: () => skip(SKIP_SECONDS),
+      seekto: (e) => {
+        if (e?.seekTime != null) seekTo(e.seekTime);
+      },
+    };
+    for (const [action, handler] of Object.entries(handlers)) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {
+        /* browser doesn't support this action — the rest still work */
+      }
+    }
+    return () => {
+      for (const action of Object.keys(handlers)) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null);
+        } catch {
+          /* nothing to clean up if it was never supported */
+        }
+      }
+    };
+  }, [ready, doc?.filename, doc?.voice, skip, seekTo]);
+
+  // Keeps the lock-screen scrubber honest about where we are.
+  useEffect(() => {
+    if (!ready || !("mediaSession" in navigator)) return;
+    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+    // Read length off the element rather than the derived value below, so
+    // this doesn't depend on declaration order further down the component.
+    const length = audioRef.current?.duration;
+    if (!Number.isFinite(length) || !navigator.mediaSession.setPositionState) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: length,
+        playbackRate: rate,
+        position: Math.min(Math.max(currentTime, 0), length),
+      });
+    } catch {
+      /* position outside duration mid-seek — the next tick corrects it */
+    }
+  }, [ready, playing, currentTime, rate]);
 
   const jumpToPage = useCallback(
     (page) => {

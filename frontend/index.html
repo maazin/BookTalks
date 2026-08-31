@@ -7,6 +7,14 @@
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
     <meta name="description" content="Turn any PDF into an audiobook you can listen to at your own pace." />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%A7%3C/text%3E%3C/svg%3E" />
+    <!-- Add to Home Screen: makes this open like an app rather than a tab,
+         which also keeps audio playing more reliably on a phone. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="BookTalks" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>BookTalks</title>
   </head>
   <body>
