@@ -5,7 +5,10 @@ import { StatusBadge, isWorking, statusLabel } from "./StatusBadge.jsx";
 import { api } from "../lib/api.js";
 import { formatDuration, formatTime, stripExtension, voiceDisplayName } from "../lib/format.js";
 
-const SPEEDS = [1, 1.25, 1.5, 2];
+// 4 is the ceiling on purpose: browsers keep audio audible up to 4x but mute
+// it beyond (Chrome/Firefox both silence playbackRate > 4), and the backend
+// validates the saved rate at le=4.0 to match.
+const SPEEDS = [1, 1.25, 1.5, 2, 3, 4];
 const SKIP_SECONDS = 15;
 const SAVE_EVERY_MS = 10000;
 const STATUS_POLL_MS = 2500;

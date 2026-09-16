@@ -45,7 +45,19 @@ MSG
 fi
 
 # Decide which tunnel to use before doing any work.
+#
+# Under launchd, this script and tailscaled start at the same moment, and
+# tailscaled takes a few seconds to bring its socket up. Checking once and
+# moving on would silently pick the temporary Cloudflare link every boot —
+# which is exactly what happened: the permanent URL went dead and nothing
+# said so. So wait for the daemon briefly before deciding.
 MODE="quick"
+if command -v tailscale >/dev/null; then
+  for _ in $(seq 1 30); do
+    [ -S "$TS_SOCK" ] && tailscale --socket="$TS_SOCK" status >/dev/null 2>&1 && break
+    sleep 1
+  done
+fi
 if command -v tailscale >/dev/null && [ -S "$TS_SOCK" ] \
    && tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
   MODE="funnel"

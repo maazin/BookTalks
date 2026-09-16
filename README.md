@@ -194,6 +194,15 @@ of the plist (LaunchAgent plists are world-readable) and out of your shell
 history. `KeepAlive` restarts it if it crashes, and `RunAtLoad` brings it back
 at login. Logs land in `~/.booktalks/logs/`.
 
+**Put `tailscaled` under launchd too** (`com.booktalks.tailscaled.plist`, same
+shape, `KeepAlive` on). A daemon started by hand with `nohup` survives a
+closed terminal but not the session that started it being torn down — and
+when it dies, Tailscale drops the Funnel's DNS record, `share.sh` silently
+falls back to a temporary Cloudflare link, and the permanent address just
+stops answering with nothing in the app saying why. That happened here.
+`share.sh` now also waits up to 30s for the Tailscale socket at start so it
+doesn't race the daemon into the fallback on every boot.
+
 Stop it with `launchctl unload ~/Library/LaunchAgents/com.booktalks.share.plist`.
 
 ### If it says "can't connect"
@@ -284,7 +293,7 @@ image was built to avoid, and isn't the path this repo is set up for.
 
 ## Using it
 
-- **Speed:** 1×, 1.25×, 1.5×, 2× — the browser's native `playbackRate`, so
+- **Speed:** 1×, 1.25×, 1.5×, 2×, 3×, 4× — the browser's native `playbackRate`, so
   there's no pitch distortion.
 - **Keyboard:** `space` play/pause, `←` / `→` skip 15 seconds.
 - **Jump to a page:** search by page number or by a phrase from the page.

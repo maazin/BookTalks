@@ -914,6 +914,9 @@ input[type="range"].slider:active::-webkit-slider-thumb { transform: scale(1.25)
 
 @media (max-width: 480px) {
   .container { padding-top: 16px; }
+  /* Six speed options across a phone: "1.25×" needs the padding gone and
+     the type a step smaller to fit without wrapping or truncating. */
+  .segmented__option { padding: 0 2px; font-size: 0.875rem; }
   /* Keep each row's meta on one line at phone widths: name, state and length
      are what matter in a list; page counts live in the player. */
   .meta-date, .meta-pages { display: none; }
