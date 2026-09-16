@@ -7,6 +7,9 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: free
+    # Explicit rather than relying on the default: the deployed site was
+    # found serving a bundle many commits old while every push had succeeded.
+    autoDeploy: true
     healthCheckPath: /api/health
     envVars:
       # Prompted for in the Render dashboard on first deploy — never committed.
