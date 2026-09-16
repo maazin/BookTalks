@@ -303,11 +303,26 @@ if _STATIC_DIR.is_dir():
 
         async def get_response(self, path: str, scope):  # type: ignore[override]
             try:
-                return await super().get_response(path, scope)
+                response = await super().get_response(path, scope)
             except StarletteHTTPException:
                 if path.startswith("api/"):
                     raise
-                return await super().get_response("index.html", scope)
+                response = await super().get_response("index.html", scope)
+                path = "index.html"
+
+            # Vite names bundles by content hash, so /assets/* can be cached
+            # forever: a new build is a new URL. Everything else — index.html
+            # above all, since it's what points at the current bundle — must
+            # be revalidated every time. With no Cache-Control at all, browsers
+            # fall back to heuristic caching and can keep a stale index.html
+            # (and therefore the OLD bundle) for hours or days after a deploy.
+            # Phones in home-screen mode were doing exactly that. no-cache
+            # still lets the ETag short-circuit to a 304, so it costs nothing.
+            if path.startswith("assets/"):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "no-cache"
+            return response
 
     app.mount("/", SPAStaticFiles(directory=_STATIC_DIR, html=True), name="static")
     log.info("Serving frontend from %s", _STATIC_DIR)
