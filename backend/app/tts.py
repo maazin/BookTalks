@@ -12,9 +12,14 @@ from typing import List, Protocol
 
 import edge_tts
 
-from . import audio, config
+from . import audio, config, edge_endpoint
 
 log = logging.getLogger(__name__)
+
+# Must happen before the first Communicate() call. Microsoft retired the host
+# edge-tts ships with, and every synthesis 403s without this — see
+# edge_endpoint for the details.
+edge_endpoint.apply()
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n{2,}")
 _HAS_SPEECH = re.compile(r"[A-Za-z0-9]")

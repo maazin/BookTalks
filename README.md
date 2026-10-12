@@ -344,16 +344,47 @@ implement a class with `async def synthesize(self, text, out_path) -> float`
 (returning the duration in seconds) and return it from `get_engine()`. Nothing
 else in the codebase changes.
 
+### The edge-tts endpoint patch
+
+In October 2026 Microsoft began answering `403` to every speech-synthesis
+request on the host edge-tts has always used
+(`speech.platform.bing.com/.../readaloud/edge/v1`). Edge 155 moved synthesis
+to `api.msedgeservices.com`, which accepts the same trusted client token as
+`Ocp-Apim-Subscription-Key`, and the old host is being retired.
+
+The symptom is total and looks like a problem with your PDF or your host: every
+page of every book fails within seconds with
+`edge-tts failed after 3 attempts: 403`, and the document ends up `failed`
+with "Audio generation failed for every page." It is neither — the file is
+fine and so is the network.
+
+`backend/app/edge_endpoint.py` repoints the websocket, and `tts.py` applies it
+before the first call. edge-tts 7.2.8 — the newest release — still ships the
+dead URL; the upstream fix is open but unreleased
+([rany2/edge-tts#490](https://github.com/rany2/edge-tts/issues/490),
+[PR #491](https://github.com/rany2/edge-tts/pull/491)).
+
+The patch is conditional, so it retires itself: once a release carries the new
+host, the check stops matching and `apply()` becomes a no-op. When you bump
+the pin in `backend/requirements.txt`, run the tests — if
+`test_apply_is_idempotent` still passes, upstream has caught up and
+`edge_endpoint.py` can be deleted along with its tests and the
+`apply()` call in `tts.py`.
+
+Only synthesis moved; the voice list is still served by the legacy host, which
+is why `--list-voices` kept working throughout and made the breakage look
+like something other than what it was.
+
 ## Tests
 
 ```bash
 backend/.venv/bin/python -m pytest backend/tests -q
 ```
 
-38 tests covering text cleanup, chunking, page-offset maths, upload validation,
+45 tests covering text cleanup, chunking, page-offset maths, upload validation,
 range requests, playback state, deletion, voice selection, metadata-derived
-durations, and the auth gate (login, logout, rate limiting,
-forged/expired/replayed cookies). TTS is stubbed, so the suite
+durations, the edge-tts endpoint patch, and the auth gate (login, logout,
+rate limiting, forged/expired/replayed cookies). TTS is stubbed, so the suite
 needs no network.
 
 ## Layout
