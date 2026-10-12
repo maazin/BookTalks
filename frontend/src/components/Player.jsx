@@ -3,7 +3,7 @@ import { Icon } from "./Icons.jsx";
 import { ConfirmDialog } from "./ConfirmDialog.jsx";
 import { StatusBadge, isWorking, statusLabel } from "./StatusBadge.jsx";
 import { api } from "../lib/api.js";
-import { formatDuration, formatTime, stripExtension, voiceDisplayName } from "../lib/format.js";
+import { formatDuration, formatTime, narrationLabel, stripExtension } from "../lib/format.js";
 
 // 4 is the ceiling on purpose: browsers keep audio audible up to 4x but mute
 // it beyond (Chrome/Firefox both silence playbackRate > 4), and the backend
@@ -235,7 +235,9 @@ export function Player({ documentId, onToast, onExit }) {
       // further down the component — referencing it from this effect's
       // dependency array would read it before initialization.
       title: stripExtension(doc?.filename || ""),
-      artist: doc?.voice ? `Narrated by ${voiceDisplayName(doc.voice)}` : "BookTalks",
+      // narrationLabel, not the voice name: on a book the local engine spoke,
+      // `voice` names a voice that was asked for and never used.
+      artist: narrationLabel(doc) ? `Narrated by ${narrationLabel(doc)}` : "BookTalks",
       album: "BookTalks",
       artwork: [
         { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
@@ -272,7 +274,7 @@ export function Player({ documentId, onToast, onExit }) {
         }
       }
     };
-  }, [ready, doc?.filename, doc?.voice, skip, seekTo]);
+  }, [ready, doc?.filename, doc?.voice, doc?.engine, skip, seekTo]);
 
   // Keeps the lock-screen scrubber honest about where we are.
   useEffect(() => {
@@ -479,7 +481,7 @@ export function Player({ documentId, onToast, onExit }) {
           <h1 className="t-title">{title}</h1>
           <p className="t-subhead secondary">
             {doc.page_count} pages · {formatDuration(doc.total_duration_sec)}
-            {doc.voice ? ` · ${voiceDisplayName(doc.voice)}` : ""}
+            {narrationLabel(doc) ? ` · ${narrationLabel(doc)}` : ""}
             {currentPage ? ` · Page ${currentPage.page_number}` : ""}
           </p>
         </div>

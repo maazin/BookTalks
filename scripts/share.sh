@@ -76,6 +76,17 @@ if [ ! -d backend/.venv ]; then
   backend/.venv/bin/pip install --quiet --upgrade pip
   backend/.venv/bin/pip install --quiet -r backend/requirements.txt
 fi
+
+# The local TTS fallback, so a Microsoft-side outage can't stop every
+# conversion. Optional and installed only here: it needs ~390 MB of RAM and
+# real CPU, which this machine has and Render's free tier does not. Checked
+# every run rather than only at venv creation, so an existing install picks it
+# up. Not fatal if it fails — the app runs fine on edge-tts alone.
+if ! backend/.venv/bin/python -c "import piper" >/dev/null 2>&1; then
+  echo "Installing the offline TTS fallback (one-time, ~190 MB)…"
+  backend/.venv/bin/pip install --quiet -r backend/requirements-local-tts.txt \
+    || echo "  … couldn't install it; BookTalks will run on edge-tts only."
+fi
 [ -d frontend/node_modules ] || (cd frontend && npm install)
 (cd frontend && npm run build)
 

@@ -48,6 +48,19 @@ def finish_document(document_id: int, total_duration_sec: float) -> None:
         )
 
 
+def set_document_engine(document_id: int, engine: Optional[str]) -> None:
+    """Record which TTS engine narrated this document.
+
+    Written once narration is finished rather than at the start: a document
+    can begin on edge-tts and be handed to the local engine part-way through,
+    so what spoke it is only known afterwards.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE documents SET engine = ? WHERE id = ?", (engine, document_id)
+        )
+
+
 def get_document(document_id: int) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         doc = _row(
