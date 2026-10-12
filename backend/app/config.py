@@ -40,6 +40,52 @@ TTS_CONCURRENCY = max(1, int(os.getenv("BOOKTALKS_TTS_CONCURRENCY", "16")))
 MAX_UPLOAD_BYTES = int(os.getenv("BOOKTALKS_MAX_UPLOAD_MB", "200")) * 1024 * 1024
 
 
+# --- local TTS fallback -----------------------------------------------------
+# A second engine that runs on this machine, so an outage at Microsoft's end
+# can't stop every conversion. edge-tts is still preferred — better voices,
+# no local compute — and this only takes over when edge-tts looks broken
+# service-wide rather than flaky on one page. See tts.FallbackEngine.
+#
+# piper-tts is an OPTIONAL dependency (backend/requirements-local-tts.txt),
+# deliberately not in the Docker image: measured at 387 MB peak RSS and, at
+# Render free's 0.1 CPU, only ~1.7x realtime, neither of which fits in 512 MB
+# or any reasonable wait. Where it isn't installed the app behaves exactly as
+# it did before — edge-tts only. See the README for the full numbers.
+LOCAL_TTS_ENABLED = os.getenv("BOOKTALKS_LOCAL_TTS", "true").lower() not in (
+    "false", "0", "off", "no",
+)
+# Piper voice, downloaded on first use into DATA_DIR/piper (63 MB, ~4s). Never
+# committed — see the README. `python -m piper.download_voices` lists the rest.
+LOCAL_TTS_VOICE = os.getenv("BOOKTALKS_LOCAL_TTS_VOICE", "en_US-lessac-medium")
+LOCAL_TTS_MODEL_DIR = Path(
+    os.getenv("BOOKTALKS_LOCAL_TTS_MODEL_DIR", DATA_DIR / "piper")
+).resolve()
+# Deliberately far below TTS_CONCURRENCY. That 16 is tuned for network wait;
+# this engine is CPU-bound and onnxruntime already parallelizes internally, so
+# extra threads buy almost nothing and cost a lot of memory. Measured on 8
+# pages sharing one loaded model, pages/sec and peak RSS:
+#
+#     1 -> 0.33, 433 MB    2 -> 0.38, 668 MB
+#     4 -> 0.43, 1147 MB   8 -> 0.40, 1304 MB
+#
+# 4 is only 1.3x faster than 1 for 2.6x the memory, and 8 is slower than 4.
+LOCAL_TTS_CONCURRENCY = max(1, int(os.getenv("BOOKTALKS_LOCAL_TTS_CONCURRENCY", "2")))
+# How many pages have to fail in a way that looks service-side (a 403, a
+# refused handshake, DNS failure — see tts._looks_service_side) before the
+# whole document switches to the local engine. One flaky chunk must not do it:
+# a healthy edge-tts produces none of these, so a handful is already
+# unambiguous, and the cost of being wrong is only these few pages.
+LOCAL_TTS_FALLBACK_AFTER = max(
+    1, int(os.getenv("BOOKTALKS_LOCAL_TTS_FALLBACK_AFTER", "3"))
+)
+# Once edge-tts has been written off, how long before a new document tries it
+# again. Without this, one outage would keep every later book on the local
+# engine until the server restarted.
+LOCAL_TTS_RETRY_EDGE_AFTER_SEC = int(
+    os.getenv("BOOKTALKS_LOCAL_TTS_RETRY_EDGE_AFTER_SEC", str(30 * 60))
+)
+
+
 # --- build identity ---------------------------------------------------------
 # Which commit is actually running, reported by /api/health.
 #

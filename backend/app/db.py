@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS documents (
     status             TEXT    NOT NULL DEFAULT 'pending',
     error_message      TEXT,
     total_duration_sec REAL,
-    voice              TEXT
+    voice              TEXT,
+    engine             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pages (
@@ -73,6 +74,10 @@ def get_conn() -> Iterator[sqlite3.Connection]:
 # needs each of these added explicitly, once, without losing their library.
 _MIGRATIONS = [
     ("documents", "voice", "ALTER TABLE documents ADD COLUMN voice TEXT"),
+    # Which TTS engine actually spoke this book. NULL for everything narrated
+    # before the local fallback existed, which is correctly "we don't know"
+    # rather than a guess at edge-tts.
+    ("documents", "engine", "ALTER TABLE documents ADD COLUMN engine TEXT"),
 ]
 
 
