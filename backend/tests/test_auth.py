@@ -54,6 +54,14 @@ def test_health_stays_open_without_a_session(protected_client):
     assert protected_client.get("/api/health").status_code == 200
 
 
+def test_health_reports_the_running_commit_without_a_session(protected_client):
+    """Checking which build is live has to work from outside, with no
+    password — that's the whole point of it being on /api/health."""
+    body = protected_client.get("/api/health").json()
+    assert body["status"] == "ok"
+    assert body["commit"]
+
+
 def test_wrong_password_is_rejected(protected_client):
     response = protected_client.post("/api/auth/login", json={"password": "nope"})
     assert response.status_code == 401

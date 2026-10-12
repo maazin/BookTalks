@@ -115,7 +115,10 @@ def _file_iterator(path: Path, start: int, end: int) -> Generator[bytes, None, N
 
 @app.get("/api/health")
 def health() -> Dict[str, str]:
-    return {"status": "ok"}
+    # `commit` is deliberately readable without a session: it's the one thing
+    # you need to check a deploy landed, and it reveals nothing — see
+    # config.COMMIT for why guessing from the bundle hash isn't enough.
+    return {"status": "ok", "commit": config.COMMIT}
 
 
 @documents_router.get("/api/voices")

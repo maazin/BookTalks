@@ -39,6 +39,47 @@ TTS_CONCURRENCY = max(1, int(os.getenv("BOOKTALKS_TTS_CONCURRENCY", "16")))
 
 MAX_UPLOAD_BYTES = int(os.getenv("BOOKTALKS_MAX_UPLOAD_MB", "200")) * 1024 * 1024
 
+
+# --- build identity ---------------------------------------------------------
+# Which commit is actually running, reported by /api/health.
+#
+# This exists because "did my change deploy?" turned out to be genuinely hard
+# to answer from outside: a deployment was once found serving a build many
+# commits old while every push had succeeded. Guessing from the frontend
+# bundle's content hash only works when a change happens to touch the
+# frontend — a backend-only fix is invisible that way.
+
+def _git_head() -> str:
+    """The checked-out commit, read from .git directly.
+
+    No subprocess: this runs at import, and a missing or broken git isn't
+    worth an exception or the startup cost. Absent entirely in a container,
+    where the environment variables below supply the answer instead.
+    """
+    git_dir = BASE_DIR / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text().strip()
+        if not head.startswith("ref: "):
+            return head  # detached HEAD is already the commit
+        ref = head[5:].strip()
+        loose = git_dir / ref
+        if loose.is_file():
+            return loose.read_text().strip()
+        # Freshly cloned or gc'd repos keep refs in packed-refs instead.
+        for line in (git_dir / "packed-refs").read_text().splitlines():
+            if line.endswith(f" {ref}"):
+                return line.split()[0]
+    except OSError:
+        pass
+    return ""
+
+
+# RENDER_GIT_COMMIT is set by Render on every deploy; BOOKTALKS_COMMIT lets
+# any other host say so explicitly.
+COMMIT = (
+    os.getenv("BOOKTALKS_COMMIT") or os.getenv("RENDER_GIT_COMMIT") or _git_head()
+)[:12] or "unknown"
+
 # A page needs at least this much text to count as "has a text layer".
 MIN_CHARS_FOR_TEXT_LAYER = 40
 # If fewer than this fraction of pages have real text, treat the PDF as scanned.

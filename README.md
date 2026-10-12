@@ -325,7 +325,7 @@ Environment variables, all optional:
 | `BOOKTALKS_DB_PATH` | `{DATA_DIR}/booktalks.db` | |
 | `BOOKTALKS_TTS_VOICE` | `en-US-AriaNeural` | Any edge-tts voice (`edge-tts --list-voices`) |
 | `BOOKTALKS_TTS_RATE` | `+0%` | Baseline narration speed |
-| `BOOKTALKS_TTS_CONCURRENCY` | `5` | Pages narrated at once; lower it if the TTS service rate limits |
+| `BOOKTALKS_TTS_CONCURRENCY` | `16` | Chunks narrated at once; lower it if the TTS service rate limits |
 | `BOOKTALKS_MAX_UPLOAD_MB` | `200` | Upload size ceiling |
 | `BOOKTALKS_CORS_ORIGINS` | localhost dev ports | Only matters for `vite dev` or a split frontend/backend deploy |
 | `BOOKTALKS_STATIC_DIR` | `frontend/dist` | Built UI the API serves, when present |
@@ -333,6 +333,7 @@ Environment variables, all optional:
 | `BOOKTALKS_SESSION_SECRET` | the password | Signs session cookies; set separately if sessions should survive a password change |
 | `BOOKTALKS_SESSION_DAYS` | `30` | How long a login lasts |
 | `BOOKTALKS_SECURE_COOKIES` | `false` | Mark the session cookie HTTPS-only — turn on for any public deployment |
+| `BOOKTALKS_COMMIT` | read from git | Build shown by `/api/health`; Render supplies `RENDER_GIT_COMMIT` automatically |
 | `BOOKTALKS_AUTH_RATE_LIMIT` | `10` | Failed logins allowed per IP before a 429 |
 | `BOOKTALKS_AUTH_RATE_WINDOW_SEC` | `300` | Window the rate limit above resets over |
 
@@ -381,7 +382,7 @@ like something other than what it was.
 backend/.venv/bin/python -m pytest backend/tests -q
 ```
 
-45 tests covering text cleanup, chunking, page-offset maths, upload validation,
+46 tests covering text cleanup, chunking, page-offset maths, upload validation,
 range requests, playback state, deletion, voice selection, metadata-derived
 durations, the edge-tts endpoint patch, and the auth gate (login, logout,
 rate limiting, forged/expired/replayed cookies). TTS is stubbed, so the suite
