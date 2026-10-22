@@ -1,0 +1,17 @@
+# Optional: the local TTS fallback (see backend/app/tts.py).
+#
+# Separate from requirements.txt on purpose. These pull in onnxruntime and
+# numpy — about 190 MB installed — and the engine itself needs ~390 MB of RAM
+# while narrating. That does not fit on Render's free tier (512 MB total,
+# 0.1 CPU), so the Docker image deliberately does not install it: there, the
+# import is simply absent, get_engine returns plain edge-tts, and the app
+# behaves exactly as it did before the fallback existed.
+#
+# Install it where the app has real resources — scripts/share.sh does this
+# automatically for the Mac deployment:
+#
+#     backend/.venv/bin/pip install -r backend/requirements-local-tts.txt
+#
+# The voice model (63 MB) is NOT here and is never committed; it downloads on
+# first use into BOOKTALKS_DATA_DIR/piper. See the README.
+piper-tts==1.8.0

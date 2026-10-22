@@ -93,7 +93,12 @@ async def _process(document_id: int) -> None:
     store.set_document_status(document_id, "generating_audio")
     out_dir = document_audio_dir(document_id)
     out_dir.mkdir(parents=True, exist_ok=True)
-    durations = await _narrate_pages(document_id, pages, out_dir, voice)
+    durations, engine_label = await _narrate_pages(
+        document_id, pages, out_dir, voice
+    )
+    # Recorded even when narration failed outright, so a document that failed
+    # on a dead service doesn't look like one that failed on its content.
+    store.set_document_engine(document_id, engine_label)
 
     if not durations:
         _ensure_present(document_id)
@@ -187,8 +192,8 @@ def _page_offsets(
 
 async def _narrate_pages(
     document_id: int, pages: List[str], out_dir: Path, voice: str
-) -> Dict[int, float]:
-    """Render every page. Returns {page_number: duration}.
+) -> Tuple[Dict[int, float], Optional[str]]:
+    """Render every page. Returns ({page_number: duration}, engine label).
 
     Concurrency is bounded once, centrally, inside the TTS engine — shared
     across every page and every chunk within a page, since a chunk is the
@@ -199,7 +204,10 @@ async def _narrate_pages(
     chunk they belong to.
     """
     semaphore = asyncio.Semaphore(config.TTS_CONCURRENCY)
-    engine = tts.get_engine(voice, semaphore=semaphore)
+    # page_count lets the engine scale its "is the service down?" threshold to
+    # the document: a two-page PDF shouldn't have to fail three times to
+    # qualify as a whole-document failure. See tts.FallbackEngine.
+    engine = tts.get_engine(voice, semaphore=semaphore, page_count=len(pages))
     tasks: List[asyncio.Task] = []
     gone = False
 
@@ -241,6 +249,16 @@ async def _narrate_pages(
         store.mark_page_done(document_id, index, str(page_path), duration)
         return index, duration
 
+    def collect(results, durations: Dict[int, float]) -> None:
+        for result in results:
+            if isinstance(result, BaseException):
+                if not isinstance(result, asyncio.CancelledError):
+                    log.error("Unexpected narration failure: %s", result)
+                continue
+            index, duration = result
+            if duration is not None:
+                durations[index] = duration
+
     tasks = [
         asyncio.create_task(render(index, text))
         for index, text in enumerate(pages, start=1)
@@ -251,12 +269,36 @@ async def _narrate_pages(
         raise DocumentGone(document_id)
 
     durations: Dict[int, float] = {}
-    for result in results:
-        if isinstance(result, BaseException):
-            if not isinstance(result, asyncio.CancelledError):
-                log.error("Unexpected narration failure: %s", result)
-            continue
-        index, duration = result
-        if duration is not None:
-            durations[index] = duration
-    return durations
+    collect(results, durations)
+
+    # A document that changed engines part-way has pages that failed only
+    # because they happened to be narrated first, while edge-tts was still
+    # being given the benefit of the doubt. Those pages aren't broken — the
+    # service was — and an engine that is known to be working is right here.
+    # Without this pass a book permanently opens with a few silent pages,
+    # which is the kind of thing that looks like the app is simply broken.
+    if getattr(engine, "using_local", False) and not gone:
+        missing = [
+            index for index in range(1, len(pages) + 1) if index not in durations
+        ]
+        if missing:
+            log.info(
+                "Re-narrating %s page(s) locally that failed before the switch",
+                len(missing),
+            )
+            tasks = [
+                asyncio.create_task(render(index, pages[index - 1]))
+                for index in missing
+            ]
+            retried = await asyncio.gather(*tasks, return_exceptions=True)
+            if gone:
+                raise DocumentGone(document_id)
+            collect(retried, durations)
+
+    # Only a FallbackEngine tracks this; a plain edge-tts engine (no local
+    # fallback installed) names itself and is right to.
+    used = getattr(engine, "engines_used", None)
+    label = tts.engine_label(used) if used is not None else (
+        getattr(engine, "label", None) if durations else None
+    )
+    return durations, label

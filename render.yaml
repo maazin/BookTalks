@@ -31,6 +31,16 @@ services:
       # handshake CPU. 8 is still a large speedup over the 3 this used to be.
       - key: BOOKTALKS_TTS_CONCURRENCY
         value: "8"
+      # The local TTS fallback is not available on this plan and is switched
+      # off explicitly so the logs say so once, at startup, instead of leaving
+      # it looking like it might kick in. Measured: the engine peaks at ~390 MB
+      # RSS (the whole instance gets 512 MB) and at 0.1 CPU manages only ~1.7x
+      # realtime, so a 300-page book would take ~6 hours — and with no
+      # persistent disk the 63 MB model would re-download on every restart.
+      # piper-tts isn't in the Docker image either, so this is belt and braces.
+      # The Mac deployment (scripts/share.sh) is where the fallback runs.
+      - key: BOOKTALKS_LOCAL_TTS
+        value: "false"
     # disk:
     #   name: booktalks-data
     #   mountPath: /data

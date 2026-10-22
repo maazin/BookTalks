@@ -4,7 +4,13 @@ import { StatusBadge, isWorking } from "./StatusBadge.jsx";
 import { ConfirmDialog } from "./ConfirmDialog.jsx";
 import { UploadDropzone } from "./UploadDropzone.jsx";
 import { api } from "../lib/api.js";
-import { formatDate, formatDuration, stripExtension } from "../lib/format.js";
+import {
+  formatDate,
+  formatDuration,
+  narrationLabel,
+  stripExtension,
+  voiceDisplayName,
+} from "../lib/format.js";
 
 const POLL_MS = 2500;
 
@@ -164,6 +170,11 @@ function DocumentRow({ doc, onOpen, onDelete }) {
               <span className="tabular">
                 {doc.pages_done} of {doc.page_count} pages
               </span>
+            )}
+            {doc.status === "ready" && narrationLabel(doc) !== voiceDisplayName(doc.voice) && (
+              // Only when it differs from the voice that was asked for — i.e.
+              // only when the local engine had to step in.
+              <span className="meta-pages">{narrationLabel(doc)}</span>
             )}
             {doc.page_count > 0 && !working && doc.status !== "failed" && (
               <span className="meta-pages">{doc.page_count} pages</span>

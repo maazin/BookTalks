@@ -51,7 +51,9 @@ FastAPI with `--reload` on :8000, Vite with HMR on **http://localhost:5173**
    wrapped lines into paragraphs so the narration sounds like prose.
 3. **Narrate** — pages go to `edge-tts` sixteen requests at a time and land as
    `data/audio/{id}/page_{n}.mp3`. A page that fails is marked failed and
-   skipped; one bad page never sinks the document.
+   skipped; one bad page never sinks the document. If edge-tts starts failing
+   for reasons that clearly aren't about the page, narration switches to a
+   [local engine](#the-offline-fallback) for the rest of the book.
 4. **Assemble** — pages are concatenated into `data/audio/{id}/full.mp3` with
    ffmpeg in stream-copy mode — nothing is re-encoded, so thirteen hours of
    audio is assembled in about ten seconds — each page's start offset is
@@ -67,6 +69,10 @@ so run the API as a **single worker** — extra workers would each get their own
 lock and their own idea of what's in flight.
 
 ## Speed
+
+Everything below is about the default engine. The
+[offline fallback](#the-offline-fallback) is CPU-bound instead, and has its own
+numbers and its own (much lower) concurrency setting.
 
 Narration is network-bound: every call to edge-tts opens a fresh connection
 and pays roughly a second of handshake overhead before any audio comes back,
@@ -327,6 +333,12 @@ Environment variables, all optional:
 | `BOOKTALKS_TTS_RATE` | `+0%` | Baseline narration speed |
 | `BOOKTALKS_TTS_CONCURRENCY` | `16` | Chunks narrated at once; lower it if the TTS service rate limits |
 | `BOOKTALKS_MAX_UPLOAD_MB` | `200` | Upload size ceiling |
+| `BOOKTALKS_LOCAL_TTS` | `true` | The offline fallback. Off on Render — see [The offline fallback](#the-offline-fallback) |
+| `BOOKTALKS_LOCAL_TTS_VOICE` | `en_US-lessac-medium` | Piper voice; `python -m piper.download_voices` lists the rest |
+| `BOOKTALKS_LOCAL_TTS_MODEL_DIR` | `{DATA_DIR}/piper` | Where the voice model is downloaded on first use |
+| `BOOKTALKS_LOCAL_TTS_CONCURRENCY` | `2` | Pages narrated locally at once. Deliberately low — this is CPU-bound, not network-bound |
+| `BOOKTALKS_LOCAL_TTS_FALLBACK_AFTER` | `3` | Service-side failures before switching engines (capped at the document's page count) |
+| `BOOKTALKS_LOCAL_TTS_RETRY_EDGE_AFTER_SEC` | `1800` | How long a new document keeps starting on the local engine after an outage |
 | `BOOKTALKS_CORS_ORIGINS` | localhost dev ports | Only matters for `vite dev` or a split frontend/backend deploy |
 | `BOOKTALKS_STATIC_DIR` | `frontend/dist` | Built UI the API serves, when present |
 | `BOOKTALKS_PASSWORD` | unset (no login) | Set to require a password — see [Deploying it publicly](#deploying-it-publicly) |
@@ -337,13 +349,143 @@ Environment variables, all optional:
 | `BOOKTALKS_AUTH_RATE_LIMIT` | `10` | Failed logins allowed per IP before a 429 |
 | `BOOKTALKS_AUTH_RATE_WINDOW_SEC` | `300` | Window the rate limit above resets over |
 
-## Swapping the TTS engine
+## The offline fallback
 
-Every text-to-speech call goes through one interface in
-`backend/app/tts.py`. To move off edge-tts — to a local Kokoro-82M, say —
-implement a class with `async def synthesize(self, text, out_path) -> float`
-(returning the duration in seconds) and return it from `get_engine()`. Nothing
-else in the codebase changes.
+edge-tts depends on a service that can refuse everyone at once, and in
+October 2026 it did: Microsoft retired the host edge-tts had always used and
+every page of every book failed with a `403`. The
+[endpoint patch](#the-edge-tts-endpoint-patch) below fixes that particular
+outage, but it is a patch on someone else's unreleased fix, and the exposure
+behind it is permanent. A single-engine app converts **nothing** when the
+service says no, and all the user sees is "Audio generation failed for every
+page."
+
+So there is a second engine — [Piper](https://github.com/OHF-Voice/piper1-gpl),
+running entirely on this machine, with no service to have an outage.
+
+### How the switch is triggered
+
+edge-tts is still preferred: better voices, and no local compute. The local
+engine takes over only when the evidence says the *service* is broken rather
+than the page:
+
+- A failure counts toward the switch only if it **can't be about the page** —
+  a `403`/`401`/`429`/`5xx`, a refused websocket handshake, a DNS failure, a
+  refused connection. A page that fails after the engine connected and
+  answered (empty audio, a bad chunk) is just a failed page, as before.
+- It takes **three** such failures (`BOOKTALKS_LOCAL_TTS_FALLBACK_AFTER`), and
+  **any success resets the count** — so a connection that drops occasionally
+  but mostly works never trips it.
+- The threshold is **capped at the document's page count**, so a two-page PDF
+  doesn't have to fail three times to qualify. A whole document failing is
+  exactly the signal.
+- Switching is **one-way within a document**. A book narrated in two
+  alternating voices would be worse than one consistent fallback voice.
+- Pages that failed *before* the switch are **re-narrated locally** afterwards,
+  so a book doesn't permanently open with a few silent pages.
+- Once edge-tts has been written off, the next document **starts local** for
+  30 minutes (`BOOKTALKS_LOCAL_TTS_RETRY_EDGE_AFTER_SEC`) rather than
+  rediscovering the outage every time — then tries edge-tts again.
+
+Which engine actually spoke a book is recorded against it and shown in the UI
+(`engine` on `/api/documents/{id}`: `edge-tts`, `piper`, or `edge-tts+piper`
+for one that switched mid-book). A locally narrated book sounds different, so
+the player says "Offline voice" instead of naming a voice the listener never
+hears. `/api/health` reports `local_tts` so you can tell from outside whether
+a deployment has a fallback at all.
+
+### What it costs
+
+Measured on the same 40-page PDF (2,948 characters per page), one M-series
+Mac, `BOOKTALKS_LOCAL_TTS_CONCURRENCY=2`:
+
+| | edge-tts | Piper (local) |
+|---|---|---|
+| Wall clock, 40 pages | **18.7 s** | 444 s |
+| pages/sec | **2.14** | 0.090 |
+| Faster than realtime | **386x** | 13.7x |
+| Peak RSS, whole server | **102 MB** | 822 MB |
+| Needs network | yes | **no** |
+
+So the fallback is roughly **24x slower** and costs about **700 MB more RAM**.
+It is still comfortably faster than listening: 13.7x realtime means a 10-hour
+audiobook renders in about 45 minutes. That is the trade — a slower, heavier,
+slightly-worse-sounding book instead of no book.
+
+Output is byte-compatible with the edge-tts path: both are 24 kHz mono mp3 at
+48 kbps, measured at −21.2 dB mean (edge-tts) and −21.4 dB (Piper), so a
+document that switched engines part-way doesn't change format or volume at the
+join. Piper's model runs at 22050 Hz and is resampled during the mp3 encode —
+it has to be, because pages are concatenated with `-c copy` and never decoded.
+
+### Installing it
+
+It's an **optional dependency**, because onnxruntime and numpy are ~190 MB and
+the engine needs real memory:
+
+```bash
+backend/.venv/bin/pip install -r backend/requirements-local-tts.txt
+```
+
+`scripts/share.sh` does this automatically, so the Mac deployment has it
+without being asked. Where it isn't installed, `get_engine()` returns plain
+edge-tts and the app behaves exactly as it did before the fallback existed —
+there is no crash and no degraded path to hit.
+
+The **voice model is never committed**: 63 MB of weights has no business in
+git. The first narration that needs it downloads it (about four seconds) into
+`BOOKTALKS_LOCAL_TTS_MODEL_DIR`, which is under `data/` and already
+gitignored. Every later page, document and restart reuses the file.
+
+### It is not viable on Render's free tier
+
+Free instances get 0.1 CPU, 512 MB RAM and no persistent disk. All three rule
+it out, and the numbers aren't close:
+
+- **Memory** — the engine peaks at ~820 MB with the server attached, against a
+  512 MB cap for the whole instance. It would OOM.
+- **CPU** — 0.058 RTF on a full core becomes ~0.58 at 0.1 CPU, i.e. only
+  ~1.7x realtime. A 300-page book would take about **six hours**, past any
+  reasonable wait and past the free plan's spin-down.
+- **Disk** — nothing persists, so the 63 MB model would re-download on every
+  restart.
+
+Rather than ship something that OOMs, piper-tts is simply **not in the Docker
+image**, and `render.yaml` sets `BOOKTALKS_LOCAL_TTS=false` so the startup log
+says so plainly instead of leaving it looking like it might kick in. Render
+keeps working exactly as it does today, on edge-tts alone. The Mac deployment
+behind the Tailscale Funnel is where the fallback actually runs — which is
+also the deployment that gets used.
+
+### Swapping either engine
+
+Every text-to-speech call goes through one interface in `backend/app/tts.py`.
+To add or replace an engine, implement a class with
+`async def synthesize(self, text, out_path) -> float` (returning the duration
+in seconds) and return it from `get_engine()`. Nothing else in the codebase
+knows which engine is in use.
+
+Kokoro-82M was the first choice for the local engine and was measured against
+Piper before being dropped — on the same page of prose it was **4.6x slower**
+(3.7x realtime vs 17.3x) and used **~1 GB of RAM** against Piper's 387 MB,
+from a model 2–6x the size. Its voice is nicer, but not at that price in a
+project whose recurring complaint has been narration speed.
+
+### If espeak-ng says a file is missing
+
+If the local engine fails with something like:
+
+```
+Error processing file '/Users/runner/work/piper1-gpl/.../espeak-ng-data/phontab'
+```
+
+that is **not** a broken package, and pinning a different piper-tts version
+won't help. espeak-ng formats its data directory into a fixed 160-byte buffer;
+anything longer is silently truncated, fails its own existence check, and
+falls back to the path baked in on whatever machine built the wheel. Measured:
+155 characters works, 160 doesn't. `tts.py` works around it by pointing espeak
+at a short symlink, but if you see it anyway, the fix is a shorter path (a
+shallower `BOOKTALKS_DATA_DIR` or virtualenv), not a different version.
 
 ### The edge-tts endpoint patch
 
@@ -382,11 +524,20 @@ like something other than what it was.
 backend/.venv/bin/python -m pytest backend/tests -q
 ```
 
-46 tests covering text cleanup, chunking, page-offset maths, upload validation,
+88 tests covering text cleanup, chunking, page-offset maths, upload validation,
 range requests, playback state, deletion, voice selection, metadata-derived
 durations, the edge-tts endpoint patch, and the auth gate (login, logout,
-rate limiting, forged/expired/replayed cookies). TTS is stubbed, so the suite
-needs no network.
+rate limiting, forged/expired/replayed cookies).
+
+For the [offline fallback](#the-offline-fallback): engine selection, which
+failures count as service-side (and which paths must *not* be misread as HTTP
+status codes), the three-strikes trigger, successes resetting the count, the
+threshold cap on short documents, pages racing the switch, one-way switching
+within a document, the outage latch expiring, re-narration of pages lost
+before a switch, and what gets recorded against the document.
+
+TTS is stubbed throughout and no model is ever loaded, so the suite needs no
+network and runs the same whether or not piper-tts is installed.
 
 ## Layout
 
@@ -396,8 +547,8 @@ backend/app/
   auth.py       Password gate: signed session cookies, rate limiting
   pipeline.py   Background job: extract → narrate → concatenate
   pdf_text.py   Extraction and cleanup
-  tts.py        TTS interface + edge-tts engine
-  audio.py      ffmpeg/ffprobe: durations, silence, stream-copy concatenation
+  tts.py        TTS interface, edge-tts engine, local Piper engine, fallback
+  audio.py      ffmpeg/ffprobe: durations, silence, concatenation, PCM encode
   store.py      All SQL
   db.py         Schema and connections
 frontend/src/
@@ -408,6 +559,7 @@ Dockerfile          Combined image (frontend + backend, one process) — hosting
 backend/Dockerfile  API image — local docker-compose
 frontend/Dockerfile nginx image — local docker-compose
 render.yaml         Render Blueprint for the combined image
+backend/requirements-local-tts.txt  Optional offline TTS engine (not in the image)
 ```
 
 ## Not in v1

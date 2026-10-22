@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, config, db, pipeline, store, voices
+from . import auth, config, db, pipeline, store, tts, voices
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -39,6 +39,19 @@ log = logging.getLogger("booktalks")
 async def lifespan(_: FastAPI):
     db.init_db()
     log.info("Data directory: %s", config.DATA_DIR)
+    # Said once, plainly, at startup. Whether there is a fallback at all is
+    # the difference between a Microsoft outage costing one retry and costing
+    # the whole library, and it is not otherwise visible from anywhere.
+    if tts.local_engine_available():
+        log.info(
+            "Local TTS fallback ready (%s), used only if edge-tts fails "
+            "service-side", config.LOCAL_TTS_VOICE,
+        )
+    else:
+        log.info(
+            "No local TTS fallback on this deployment — edge-tts only. "
+            "An outage at Microsoft's end will fail conversions."
+        )
     yield
 
 
@@ -95,6 +108,9 @@ def _document_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
         "pages_done": doc.get("pages_done", 0),
         "pages_failed": doc.get("pages_failed", 0),
         "voice": doc.get("voice") or config.TTS_VOICE,
+        # NULL for anything narrated before the local fallback existed, and
+        # for a document that hasn't been narrated yet.
+        "engine": doc.get("engine"),
     }
 
 
@@ -114,11 +130,19 @@ def _file_iterator(path: Path, start: int, end: int) -> Generator[bytes, None, N
 # --- endpoints -------------------------------------------------------------
 
 @app.get("/api/health")
-def health() -> Dict[str, str]:
+def health() -> Dict[str, Any]:
     # `commit` is deliberately readable without a session: it's the one thing
     # you need to check a deploy landed, and it reveals nothing — see
     # config.COMMIT for why guessing from the bundle hash isn't enough.
-    return {"status": "ok", "commit": config.COMMIT}
+    return {
+        "status": "ok",
+        "commit": config.COMMIT,
+        # Public for the same reason `commit` is: it's a fact about which
+        # build is running that you otherwise cannot check from outside, and
+        # it reveals nothing. "Does this deployment have a fallback?" is
+        # exactly the question this change makes worth asking.
+        "local_tts": tts.local_engine_available(),
+    }
 
 
 @documents_router.get("/api/voices")
