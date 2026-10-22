@@ -17,4 +17,4 @@ fi
 
 echo
 echo "BookTalks: http://localhost:8000"
-cd backend && exec ../backend/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+cd backend && exec ../backend/.venv/bin/python -m uvicorn app.main:app --host "${BOOKTALKS_HOST:-127.0.0.1}" --port 8000

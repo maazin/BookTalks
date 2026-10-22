@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS documents (
     status             TEXT    NOT NULL DEFAULT 'pending',
     error_message      TEXT,
     total_duration_sec REAL,
-    voice              TEXT
+    voice              TEXT,
+    part_pages         INTEGER NOT NULL DEFAULT 25
 );
 
 CREATE TABLE IF NOT EXISTS pages (
@@ -72,6 +73,7 @@ def get_conn() -> Iterator[sqlite3.Connection]:
 # helps a brand-new database — an existing documents.db on someone's disk
 # needs each of these added explicitly, once, without losing their library.
 _MIGRATIONS = [
+    ("documents", "part_pages", "ALTER TABLE documents ADD COLUMN part_pages INTEGER NOT NULL DEFAULT 25"),
     ("documents", "voice", "ALTER TABLE documents ADD COLUMN voice TEXT"),
 ]
 
@@ -92,12 +94,3 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
-        # A document left mid-flight by a crash or restart can never finish on
-        # its own — surface it as failed rather than polling forever.
-        conn.execute(
-            """UPDATE documents
-                  SET status = 'failed',
-                      error_message = COALESCE(error_message,
-                          'Processing was interrupted — upload the PDF again.')
-                WHERE status IN ('pending', 'extracting', 'generating_audio')"""
-        )

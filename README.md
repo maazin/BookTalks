@@ -7,6 +7,51 @@ it reachable somewhere other than your own machine.
 
 <!-- Stack: FastAPI · SQLite · edge-tts · PyMuPDF · ffmpeg · React + Vite -->
 
+## Free use without losing your books
+
+Run on your own computer with `./scripts/start.sh` or `docker compose up --build`.
+There is no paid API or hosting subscription: narration uses the existing
+Edge TTS integration, which requires internet access and can be rate limited.
+Keep the `data/` folder: it contains the PDFs, audio, library, and listening positions.
+Local startup and Docker bind to localhost by default. Set `BOOKTALKS_HOST=0.0.0.0`
+for the startup script only if you intentionally want network access (configure a password).
+
+**Render's free deployment still uses temporary storage.** These code changes cannot
+make that disk persistent. Its library now displays a warning. For a free durable
+library, use local storage; do not keep your only copy on the free hosted instance.
+Books already erased from that server need to be restored from a backup or uploaded again.
+
+Large PDFs are automatically divided into conversion parts of **25 pages**.
+Pages within each part are narrated concurrently. The Library's **audio parts** menu
+lets you download each completed part before the whole book finishes. This improves
+time to first listen and bounds queued work; it does not promise faster TTS service.
+`BOOKTALKS_PDF_PART_PAGES` changes the size for new uploads. The source PDF is retained
+intact, and the final player still offers one continuous audiobook.
+
+After a restart, unfinished conversions resume automatically. **Retry** on a failed
+book reuses completed pages instead of requiring another upload. Failed pages are
+never silently omitted from a finished audiobook. Completed parts remain downloadable
+if other pages fail. Finished books keep both part downloads and the full MP3, so allow
+roughly twice the final audio size, plus the original PDF and database, on disk.
+
+### Back up and restore
+
+Stop BookTalks first (`Ctrl+C`, or `docker compose down`) so audio files are stable:
+
+```bash
+python3 scripts/backup.py booktalks-backup.zip
+```
+
+For custom storage, pass `--data-dir /path/to/library` and, if needed,
+`--database /path/to/booktalks.db`. The backup includes PDFs, audio, listening
+positions, and a consistent SQLite snapshot including committed WAL data.
+It refuses to overwrite an existing backup. Keep another copy on a separate drive.
+
+To restore, keep the server stopped, retain your current `data/` folder as a safety
+copy, and unzip the backup into a new empty `data/` folder. Start BookTalks again.
+With a custom database path, place the restored `booktalks.db` at that path. Never
+mix a restored database with stale `-wal` or `-shm` files from another database.
+
 ## Quick start
 
 **Requirements:** Python 3.11+, Node 20+, and `ffmpeg` on your PATH
@@ -51,11 +96,12 @@ FastAPI with `--reload` on :8000, Vite with HMR on **http://localhost:5173**
    wrapped lines into paragraphs so the narration sounds like prose.
 3. **Narrate** — pages go to `edge-tts` sixteen requests at a time and land as
    `data/audio/{id}/page_{n}.mp3`. A page that fails is marked failed and
-   skipped; one bad page never sinks the document.
+   retained for retry; completed pages are checkpointed.
 4. **Assemble** — pages are concatenated into `data/audio/{id}/full.mp3` with
    ffmpeg in stream-copy mode — nothing is re-encoded, so thirteen hours of
    audio is assembled in about ten seconds — each page's start offset is
    written back to the database, and the per-page files are then deleted.
+   Downloadable 25-page parts are retained alongside the full audiobook.
 5. **Play** — the player streams that file with HTTP range requests, so seeking
    is instant and nothing has to download up front.
 

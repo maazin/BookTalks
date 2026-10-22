@@ -37,6 +37,9 @@ TTS_CHUNK_CHARS = int(os.getenv("BOOKTALKS_TTS_CHUNK_CHARS", "2200"))
 # take it; lower it if the service starts refusing requests.
 TTS_CONCURRENCY = max(1, int(os.getenv("BOOKTALKS_TTS_CONCURRENCY", "16")))
 
+# Bound page tasks and publish short, independently playable parts.
+PDF_PART_PAGES = max(1, int(os.getenv("BOOKTALKS_PDF_PART_PAGES", "25")))
+
 MAX_UPLOAD_BYTES = int(os.getenv("BOOKTALKS_MAX_UPLOAD_MB", "200")) * 1024 * 1024
 
 

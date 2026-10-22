@@ -11,7 +11,7 @@ services:
       BOOKTALKS_CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
       # Pages narrated at once. Raise for speed, lower if the TTS service
       # starts rate limiting.
-      BOOKTALKS_TTS_CONCURRENCY: "5"
+      BOOKTALKS_TTS_CONCURRENCY: "16"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 10s
@@ -23,7 +23,7 @@ services:
   web:
     build: ./frontend
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     depends_on:
       api:
         condition: service_healthy

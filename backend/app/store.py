@@ -3,6 +3,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 
 from .db import get_conn
+from . import config
 
 
 def _row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -14,8 +15,8 @@ def _row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
 def create_document(filename: str, voice: str) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO documents (filename, voice, status) VALUES (?, ?, 'pending')",
-            (filename, voice),
+            "INSERT INTO documents (filename, voice, part_pages, status) VALUES (?, ?, ?, 'pending')",
+            (filename, voice, config.PDF_PART_PAGES),
         )
         return int(cur.lastrowid)
 
@@ -97,8 +98,9 @@ def delete_document(document_id: int) -> bool:
 def insert_pages(document_id: int, texts: List[str]) -> None:
     with get_conn() as conn:
         conn.executemany(
-            """INSERT OR REPLACE INTO pages (document_id, page_number, text, status)
-               VALUES (?, ?, ?, 'pending')""",
+            """INSERT INTO pages (document_id, page_number, text, status)
+               VALUES (?, ?, ?, 'pending')
+               ON CONFLICT(document_id, page_number) DO NOTHING""",
             [(document_id, i + 1, text) for i, text in enumerate(texts)],
         )
 
@@ -183,3 +185,12 @@ def upsert_playback(
             (document_id, position_sec, playback_rate),
         )
     return get_playback(document_id)
+
+
+def queue_retry(document_id: int) -> bool:
+    """Claim once, even when two retry requests arrive together."""
+    with get_conn() as conn:
+        return conn.execute(
+            "UPDATE documents SET status = 'pending', error_message = NULL "
+            "WHERE id = ? AND status = 'failed'", (document_id,)
+        ).rowcount > 0

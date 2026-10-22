@@ -61,6 +61,9 @@ async def process_document(document_id: int) -> None:
 
 
 async def _process(document_id: int) -> None:
+    _ensure_present(document_id)
+    if store.get_document(document_id)["status"] == "ready":
+        return
     pdf_path = document_pdf_path(document_id)
     if not pdf_path.exists():
         store.set_document_status(document_id, "failed", "Uploaded file is missing.")
@@ -74,7 +77,9 @@ async def _process(document_id: int) -> None:
     # 1. Extract and clean.
     store.set_document_status(document_id, "extracting")
     try:
-        pages = await asyncio.to_thread(pdf_text.extract_and_clean, pdf_path)
+        saved = store.get_pages(document_id)
+        pages = ([p["text"] for p in saved] if saved else
+                 await asyncio.to_thread(pdf_text.extract_and_clean, pdf_path))
     except pdf_text.NoTextLayerError as exc:
         store.set_document_status(document_id, "failed", str(exc))
         return
@@ -95,13 +100,13 @@ async def _process(document_id: int) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     durations = await _narrate_pages(document_id, pages, out_dir, voice)
 
-    if not durations:
+    if len(durations) != len(pages):
         _ensure_present(document_id)
         store.set_document_status(
             document_id,
             "failed",
-            "Audio generation failed for every page. Check your internet connection "
-            "and try again.",
+            f"{len(pages) - len(durations)} pages still need audio. "
+            "Retry to continue from saved progress.",
         )
         return
 
@@ -114,7 +119,10 @@ async def _process(document_id: int) -> None:
 
     _ensure_present(document_id)
     full_path = full_audio_path(document_id)
-    total = await asyncio.to_thread(audio.concat_mp3s, parts, full_path)
+    temporary = full_path.with_name("full.pending.mp3")
+    total = await asyncio.to_thread(audio.concat_mp3s, parts, temporary)
+    _ensure_present(document_id)
+    temporary.replace(full_path)
 
     offsets = _page_offsets(len(pages), durations, total)
 
@@ -190,18 +198,16 @@ async def _narrate_pages(
 ) -> Dict[int, float]:
     """Render every page. Returns {page_number: duration}.
 
-    Concurrency is bounded once, centrally, inside the TTS engine — shared
-    across every page and every chunk within a page, since a chunk is the
-    actual unit of network cost. Pages themselves aren't gated here: a page
-    with one short paragraph and a page with five dense ones both just ask
-    the engine to synthesize their text, and the engine decides how many
-    real requests are in flight at once, regardless of which page or which
-    chunk they belong to.
+    Only one small part's page tasks are queued at a time. The shared engine
+    semaphore bounds actual TTS requests, including chunks within each page.
+    Completed page files are reused after interruptions and retries.
     """
     semaphore = asyncio.Semaphore(config.TTS_CONCURRENCY)
     engine = tts.get_engine(voice, semaphore=semaphore)
     tasks: List[asyncio.Task] = []
     gone = False
+    saved = {p["page_number"]: p for p in store.get_pages(document_id)}
+    part_pages = store.get_document(document_id)["part_pages"]
 
     def stop_everything() -> None:
         """The document was deleted — drop the pages still in flight rather
@@ -224,6 +230,11 @@ async def _narrate_pages(
             return index, None
 
         page_path = out_dir / f"page_{index}.mp3"
+        checkpoint = saved.get(index, {})
+        if (checkpoint.get("status") == "done" and
+                checkpoint.get("duration_sec") is not None and
+                page_path.is_file() and page_path.stat().st_size > 0):
+            return index, checkpoint["duration_sec"]
         try:
             duration = await engine.synthesize(text, page_path)
         except Exception as exc:  # noqa: BLE001
@@ -241,22 +252,36 @@ async def _narrate_pages(
         store.mark_page_done(document_id, index, str(page_path), duration)
         return index, duration
 
-    tasks = [
-        asyncio.create_task(render(index, text))
-        for index, text in enumerate(pages, start=1)
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    if gone:
-        raise DocumentGone(document_id)
-
     durations: Dict[int, float] = {}
-    for result in results:
-        if isinstance(result, BaseException):
-            if not isinstance(result, asyncio.CancelledError):
-                log.error("Unexpected narration failure: %s", result)
-            continue
-        index, duration = result
-        if duration is not None:
-            durations[index] = duration
+    try:
+        for start in range(0, len(pages), part_pages):
+            end = min(start + part_pages, len(pages))
+            tasks = [asyncio.create_task(render(i + 1, pages[i]))
+                     for i in range(start, end)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            if gone:
+                raise DocumentGone(document_id)
+            for result in results:
+                if isinstance(result, BaseException):
+                    log.error("Unexpected narration failure: %s", result)
+                    continue
+                index, duration = result
+                if duration is not None:
+                    durations[index] = duration
+            # Publish a small part as soon as all its pages are available.
+            # Atomic rename keeps clients away from partially written audio.
+            if all(i in durations for i in range(start + 1, end + 1)):
+                _ensure_present(document_id)
+                target = out_dir / f"part_{start + 1}_{end}.mp3"
+                if not target.exists():
+                    temp = target.with_suffix(".pending.mp3")
+                    await asyncio.to_thread(audio.concat_mp3s,
+                        [out_dir / f"page_{i}.mp3" for i in range(start + 1, end + 1)], temp)
+                    _ensure_present(document_id)
+                    temp.replace(target)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     return durations
