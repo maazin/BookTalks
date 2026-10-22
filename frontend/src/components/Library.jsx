@@ -13,6 +13,8 @@ export function Library({ onOpen, onToast }) {
   const [error, setError] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [ephemeral, setEphemeral] = useState(false);
+  useEffect(() => { api.storageStatus().then(s => setEphemeral(s.ephemeral)).catch(() => {}); }, []);
   const timerRef = useRef(null);
 
   const refresh = useCallback(async () => {
@@ -53,6 +55,14 @@ export function Library({ onOpen, onToast }) {
     setReloadKey((key) => key + 1);
   }
 
+  async function retry(doc) {
+    try {
+      await api.retryDocument(doc.id);
+      onToast("Continuing from saved pages…");
+      setReloadKey(key => key + 1);
+    } catch (err) { onToast(err.message); }
+  }
+
   async function confirmDelete() {
     const doc = pendingDelete;
     setPendingDelete(null);
@@ -73,6 +83,10 @@ export function Library({ onOpen, onToast }) {
           <p className="t-subhead secondary" style={{ marginTop: -4 }}>
             Drop in a PDF and BookTalks narrates it, page by page.
           </p>
+          {ephemeral && <div className="banner" role="alert">
+            This server uses temporary storage. Books can disappear after a restart.
+            Download your audio parts, or run BookTalks locally to keep your library for free.
+          </div>}
           <UploadDropzone onUploaded={handleUploaded} onError={(message) => onToast(message)} />
         </section>
 
@@ -123,6 +137,7 @@ export function Library({ onOpen, onToast }) {
                     doc={doc}
                     onOpen={() => onOpen(doc.id)}
                     onDelete={() => setPendingDelete(doc)}
+                    onRetry={() => retry(doc)}
                   />
                 ))}
               </div>
@@ -143,7 +158,7 @@ export function Library({ onOpen, onToast }) {
   );
 }
 
-function DocumentRow({ doc, onOpen, onDelete }) {
+function DocumentRow({ doc, onOpen, onDelete, onRetry }) {
   const title = stripExtension(doc.filename);
   const working = isWorking(doc.status);
   const percent =
@@ -197,6 +212,15 @@ function DocumentRow({ doc, onOpen, onDelete }) {
         <Icon.ChevronRight className="chevron" width={18} height={18} strokeWidth={2.2} />
       </button>
       <div className="row__actions">
+        {doc.status === "failed" && <button type="button" className="btn" onClick={onRetry}>Retry</button>}
+        {doc.parts?.length > 0 && <details>
+          <summary className="t-footnote">{doc.parts.length} audio parts</summary>
+          <div className="stack stack-8">
+            {doc.parts.map(part => <a key={part.start_page} href={part.url} download className="t-footnote">
+              Pages {part.start_page}–{part.end_page}
+            </a>)}
+          </div>
+        </details>}
         <button
           type="button"
           className="btn btn--icon btn--danger"

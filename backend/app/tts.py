@@ -205,7 +205,8 @@ class EdgeTTSEngine:
         try:
             try:
                 await asyncio.gather(*tasks)
-            except Exception:
+            except BaseException:
+                # Cancellation must also stop children before deleting files.
                 # One chunk failing for good means the page has failed; don't
                 # leave its siblings still running in the background.
                 for task in tasks:

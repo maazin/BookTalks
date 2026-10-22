@@ -1,4 +1,5 @@
 """BookTalks API — upload a PDF, get an audiobook."""
+import asyncio
 import logging
 import mimetypes
 import os
@@ -39,7 +40,16 @@ log = logging.getLogger("booktalks")
 async def lifespan(_: FastAPI):
     db.init_db()
     log.info("Data directory: %s", config.DATA_DIR)
-    yield
+    # Resume persisted jobs after a crash; never discard their page checkpoints.
+    jobs = [asyncio.create_task(pipeline.process_document(doc["id"]))
+            for doc in store.list_documents()
+            if doc["status"] in {"pending", "extracting", "generating_audio"}]
+    try:
+        yield
+    finally:
+        for job in jobs:
+            job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
 
 
 app = FastAPI(title="BookTalks", version="1.0.0", lifespan=lifespan)
@@ -95,6 +105,7 @@ def _document_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
         "pages_done": doc.get("pages_done", 0),
         "pages_failed": doc.get("pages_failed", 0),
         "voice": doc.get("voice") or config.TTS_VOICE,
+        "parts": list_parts(doc["id"]),
     }
 
 
@@ -124,6 +135,11 @@ def health() -> Dict[str, str]:
 @documents_router.get("/api/voices")
 async def list_voices() -> Dict[str, Any]:
     return {"default": voices.default_voice(), "voices": await voices.list_voices()}
+
+
+@documents_router.get("/api/storage")
+def storage_status():
+    return {"ephemeral": os.getenv("BOOKTALKS_EPHEMERAL_STORAGE", "false").lower() == "true"}
 
 
 @documents_router.post("/api/documents", status_code=201)
@@ -177,7 +193,11 @@ async def upload_document(
 
         document_id = store.create_document(filename, chosen_voice)
         store.set_page_count(document_id, page_count)
-        shutil.move(tmp_path, pipeline.document_pdf_path(document_id))
+        try:
+            shutil.move(tmp_path, pipeline.document_pdf_path(document_id))
+        except Exception:
+            store.delete_document(document_id)
+            raise
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -198,6 +218,39 @@ def list_documents() -> List[Dict[str, Any]]:
 @documents_router.get("/api/documents/{document_id}")
 def get_document(document_id: int) -> Dict[str, Any]:
     return _document_payload(_require_document(document_id))
+
+
+@documents_router.post("/api/documents/{document_id}/retry", status_code=202)
+def retry_document(document_id: int, background_tasks: BackgroundTasks):
+    _require_document(document_id)
+    if not pipeline.document_pdf_path(document_id).is_file():
+        raise HTTPException(409, "The original PDF is missing. Restore your backup first.")
+    if not store.queue_retry(document_id):
+        raise HTTPException(409, "Only failed conversions can be retried.")
+    background_tasks.add_task(pipeline.process_document, document_id)
+    return {"id": document_id, "status": "pending"}
+
+
+@documents_router.get("/api/documents/{document_id}/parts")
+def list_parts(document_id: int):
+    _require_document(document_id)
+    parts = []
+    for path in pipeline.document_audio_dir(document_id).glob("part_*_*.mp3"):
+        match = re.fullmatch(r"part_(\d+)_(\d+)\.mp3", path.name)
+        if match:
+            start, end = map(int, match.groups())
+            parts.append({"start_page": start, "end_page": end,
+                          "url": f"/api/documents/{document_id}/parts/{start}/{end}"})
+    return sorted(parts, key=lambda part: part["start_page"])
+
+
+@documents_router.get("/api/documents/{document_id}/parts/{start}/{end}")
+def download_part(document_id: int, start: int, end: int):
+    _require_document(document_id)
+    path = pipeline.document_audio_dir(document_id) / f"part_{start}_{end}.mp3"
+    if not path.is_file():
+        raise HTTPException(404, "Part is not ready yet.")
+    return FileResponse(path, media_type="audio/mpeg", filename=f"book-{document_id}-pages-{start}-{end}.mp3")
 
 
 @documents_router.get("/api/documents/{document_id}/pages")

@@ -58,6 +58,8 @@ export const api = {
       body: JSON.stringify({ password }),
     }),
   logout: () => request("/auth/logout", { method: "POST" }),
+  storageStatus: () => request("/storage"),
+  retryDocument: (id) => request(`/documents/${id}/retry`, { method: "POST" }),
   listDocuments: () => request("/documents"),
   getDocument: (id) => request(`/documents/${id}`),
   getPages: (id) => request(`/documents/${id}/pages`),

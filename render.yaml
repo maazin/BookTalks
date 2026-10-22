@@ -24,6 +24,8 @@ services:
       # occasionally on restart. Uncomment the disk block below (and switch
       # plan to starter or above) once you want a library that actually
       # survives — see the README for the tradeoff.
+      - key: BOOKTALKS_EPHEMERAL_STORAGE
+        value: "true"
       - key: BOOKTALKS_DATA_DIR
         value: /data
       # Below the local default of 16: free-plan instances get 512 MB of RAM
